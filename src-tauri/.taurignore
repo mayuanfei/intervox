@@ -1,0 +1,2 @@
+# Ignore exports folder which is populated by TTS/video generation to prevent watcher restart
+exports/

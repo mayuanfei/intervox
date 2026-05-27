@@ -1,0 +1,29 @@
+[package]
+name = "intervox"
+version = "0.1.0"
+description = "AI video translation and dubbing desktop app"
+authors = ["InterVox"]
+edition = "2021"
+
+[lib]
+name = "intervox_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "intervox"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.2.0", features = [] }
+
+[dependencies]
+keyring = { version = "3.6.2", features = ["apple-native", "windows-native", "sync-secret-service"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.5.0", features = [] }
+thiserror = "2.0"
+uuid = { version = "1.16", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.20"
