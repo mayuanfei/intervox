@@ -94,19 +94,8 @@ impl TargetLanguageCode {
             TargetLanguageCode::DeDe => "德语",
         }
     }
-
-    pub fn cosyvoice_language_hint(&self) -> &'static str {
-        match self {
-            TargetLanguageCode::ZhHansCn => "zh",
-            TargetLanguageCode::EnUs => "en",
-            TargetLanguageCode::JaJp => "ja",
-            TargetLanguageCode::KoKr => "ko",
-            TargetLanguageCode::EsEs => "es",
-            TargetLanguageCode::FrFr => "fr",
-            TargetLanguageCode::DeDe => "de",
-        }
-    }
 }
+
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -300,6 +289,8 @@ pub enum AsrError {
     TaskTimeout,
     #[error("凭据错误：{0}")]
     Credential(#[from] CredentialError),
+    #[error("本地音频提取或上传失败：{0}")]
+    LocalProcessing(String),
 }
 
 pub trait AsrProvider {
@@ -418,15 +409,39 @@ impl AsrProvider for AliyunBailianProvider {
             return Err(AsrError::UnsupportedBailianModel);
         }
 
-        let file_url = validate_public_media_url(&request.audio_path)?;
         let api_key = CredentialStore::default()
             .get(self.id())?
             .ok_or(AsrError::MissingCredential)?;
         let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
-        let task_id = submit_bailian_qwen_task(&client, &api_key, request, file_url.as_str())?;
+
+        let is_public_url = request.audio_path.starts_with("http://") || request.audio_path.starts_with("https://");
+
+        let file_url = if is_public_url {
+            validate_public_media_url(&request.audio_path)?.to_string()
+        } else {
+            let temp_audio_path = extract_audio_to_temp(&request.audio_path)
+                .map_err(|e| AsrError::LocalProcessing(e))?;
+
+            let upload_result = (|| -> Result<String, AsrError> {
+                let policy = get_dashscope_upload_policy(
+                    &client,
+                    &api_key,
+                    request.config.aliyun_bailian.model.as_model_name(),
+                )?;
+
+                upload_file_to_dashscope_oss(&client, &policy, &temp_audio_path)
+            })();
+
+            let _ = std::fs::remove_file(&temp_audio_path);
+
+            upload_result?
+        };
+
+        let task_id = submit_bailian_qwen_task(&client, &api_key, request, &file_url)?;
         let transcription_url = poll_bailian_task(&client, &api_key, request, &task_id)?;
         let result_json = client
             .get(transcription_url)
+            .header("X-DashScope-OssResourceResolve", "enable")
             .send()?
             .error_for_status()?
             .json::<Value>()?;
@@ -491,6 +506,7 @@ fn submit_bailian_qwen_task(
         .bearer_auth(api_key)
         .header("Content-Type", "application/json")
         .header("X-DashScope-Async", "enable")
+        .header("X-DashScope-OssResourceResolve", "enable")
         .json(&payload)
         .send()?
         .error_for_status()?
@@ -519,6 +535,7 @@ fn poll_bailian_task(
             .bearer_auth(api_key)
             .header("Content-Type", "application/json")
             .header("X-DashScope-Async", "enable")
+            .header("X-DashScope-OssResourceResolve", "enable")
             .send()?
             .error_for_status()?
             .json::<Value>()?;
@@ -731,6 +748,115 @@ fn demo_transcript(
             confidence: Some(0.93),
         }],
     }
+}
+
+fn extract_audio_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, String> {
+    let input_path = std::path::Path::new(input_video_path);
+    if !input_path.exists() {
+        return Err("输入视频文件不存在。".to_string());
+    }
+
+    let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
+    if dir.ends_with("src-tauri") {
+        dir.pop();
+    }
+    let temp_dir = dir.join("exports").join("temp_audio");
+    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+
+    let output_audio_path = temp_dir.join(format!(
+        "temp_asr_{}.mp3",
+        uuid::Uuid::new_v4()
+    ));
+
+    // Run FFmpeg: extract mono mp3 at 16kHz, 64k bitrate
+    let mut cmd = std::process::Command::new(crate::export::ffmpeg_path());
+    cmd.arg("-y")
+       .arg("-i")
+       .arg(input_video_path)
+       .arg("-vn")
+       .arg("-c:a")
+       .arg("libmp3lame")
+       .arg("-ar")
+       .arg("16000")
+       .arg("-ac")
+       .arg("1")
+       .arg("-b:a")
+       .arg("64k")
+       .arg(&output_audio_path);
+
+    let output = cmd.output().map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
+    if !output.status.success() {
+        let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(format!("音频提取失败：{err_msg}"));
+    }
+
+    Ok(output_audio_path)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UploadPolicyData {
+    pub upload_host: String,
+    pub upload_dir: String,
+    pub oss_access_key_id: String,
+    pub signature: String,
+    pub policy: String,
+    pub x_oss_object_acl: String,
+    pub x_oss_forbid_overwrite: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UploadPolicyResponse {
+    pub data: UploadPolicyData,
+}
+
+pub fn get_dashscope_upload_policy(
+    client: &Client,
+    api_key: &str,
+    model: &str,
+) -> Result<UploadPolicyData, AsrError> {
+    let url = format!(
+        "https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model={}",
+        model
+    );
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()?
+        .error_for_status()?
+        .json::<UploadPolicyResponse>()?;
+    Ok(resp.data)
+}
+
+pub fn upload_file_to_dashscope_oss(
+    client: &Client,
+    policy_data: &UploadPolicyData,
+    local_file_path: &std::path::Path,
+) -> Result<String, AsrError> {
+    let file_name = local_file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AsrError::LocalProcessing("无法解析临时音频文件名".to_string()))?;
+
+    let key = format!("{}/{}", policy_data.upload_dir, file_name);
+
+    let form = reqwest::blocking::multipart::Form::new()
+        .text("OSSAccessKeyId", policy_data.oss_access_key_id.clone())
+        .text("policy", policy_data.policy.clone())
+        .text("Signature", policy_data.signature.clone())
+        .text("key", key.clone())
+        .text("x-oss-object-acl", policy_data.x_oss_object_acl.clone())
+        .text("x-oss-forbid-overwrite", policy_data.x_oss_forbid_overwrite.clone())
+        .text("success_action_status", "200")
+        .file("file", local_file_path)
+        .map_err(|e| AsrError::LocalProcessing(format!("读取上传文件失败：{e}")))?;
+
+    let _resp = client
+        .post(&policy_data.upload_host)
+        .multipart(form)
+        .send()?
+        .error_for_status()?;
+
+    Ok(format!("oss://{}", key))
 }
 
 #[cfg(test)]

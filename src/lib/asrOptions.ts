@@ -40,23 +40,23 @@ export const ASR_PROVIDER_OPTIONS: Array<{
 }> = [
   {
     value: "aliyun_bailian",
-    label: "阿里云百炼",
-    summary: "默认云端识别，适合国内网络和长音视频转写。",
+    label: "阿里云百炼 (Alibaba Bailian)",
+    summary: "默认云端识别，适合高质量、长视频转写与情绪分析。",
   },
   {
     value: "google_chirp3",
     label: "Google Chirp 3",
-    summary: "海外高质量多语种识别，可选择 Google 服务区域。",
+    summary: "海外高质量多语种识别，适合小语种和出海本地化。",
   },
   {
     value: "volc_doubao",
-    label: "火山豆包",
-    summary: "国内快速识别备选，适合极速录音文件识别。",
+    label: "火山引擎豆包 (Volcengine)",
+    summary: "极速大模型识别，适合短平快媒体资源的高频处理。",
   },
   {
     value: "local_whisper",
-    label: "本地 Whisper",
-    summary: "离线兜底，不依赖云端 API，速度取决于设备。",
+    label: "本地 Whisper (Local)",
+    summary: "完全离线兜底，不依赖云端，保护绝对的隐私安全。",
   },
 ];
 
@@ -64,56 +64,78 @@ export const SOURCE_LANGUAGE_OPTIONS: Array<{
   value: SourceLanguageCode;
   label: string;
 }> = [
-  { value: "auto", label: "自动识别" },
-  { value: "en-US", label: "英语" },
-  { value: "ja-JP", label: "日语" },
-  { value: "ko-KR", label: "韩语" },
-  { value: "cmn-Hans-CN", label: "中文普通话" },
+  { value: "auto", label: "自动检测 (Auto-Detect)" },
+  { value: "en-US", label: "英语 (English)" },
+  { value: "ja-JP", label: "日语 (Japanese)" },
+  { value: "ko-KR", label: "韩语 (Korean)" },
+  { value: "cmn-Hans-CN", label: "中文普通话 (Chinese Mandarin)" },
 ];
 
 export const TARGET_LANGUAGE_OPTIONS: Array<{
   value: TargetLanguageCode;
   label: string;
 }> = [
-  { value: "zh-Hans-CN", label: "中文（简体，普通话）" },
-  { value: "en-US", label: "英语" },
-  { value: "ja-JP", label: "日语" },
-  { value: "ko-KR", label: "韩语" },
-  { value: "es-ES", label: "西班牙语" },
-  { value: "fr-FR", label: "法语" },
-  { value: "de-DE", label: "德语" },
+  { value: "zh-Hans-CN", label: "简体中文 (Simplified Chinese)" },
+  { value: "en-US", label: "英语 (English)" },
+  { value: "ja-JP", label: "日语 (Japanese)" },
+  { value: "ko-KR", label: "韩语 (Korean)" },
+  { value: "es-ES", label: "西班牙语 (Spanish)" },
+  { value: "fr-FR", label: "法语 (French)" },
+  { value: "de-DE", label: "德语 (German)" },
 ];
 
 export const GOOGLE_REGION_OPTIONS: Array<{
   value: GoogleRegion;
   label: string;
 }> = [
-  { value: "asia-southeast1", label: "asia-southeast1" },
-  { value: "asia-northeast1", label: "asia-northeast1" },
-  { value: "us", label: "us" },
-  { value: "eu", label: "eu" },
+  { value: "asia-southeast1", label: "亚太东南 (新加坡)" },
+  { value: "asia-northeast1", label: "亚太东北 (东京)" },
+  { value: "us", label: "美国 (United States)" },
+  { value: "eu", label: "欧洲 (Europe)" },
 ];
 
 export const BAILIAN_MODEL_OPTIONS: Array<{
-  value: BailianModel;
+  value: BailianModel | string;
   label: string;
 }> = [
-  { value: "qwen3-asr-flash-filetrans", label: "千问3-ASR-Flash-Filetrans" },
-  { value: "fun-asr", label: "Fun-ASR" },
+  { value: "qwen3-asr-flash-filetrans", label: "千问3-ASR-Flash (极速)" },
+  { value: "sensevoice-v1", label: "SenseVoice-v1 (富文本高感官)" },
+  { value: "paraformer-v1", label: "Paraformer-v1 (标准学术)" },
 ];
 
 export const BAILIAN_DEPLOYMENT_OPTIONS: Array<{
   value: BailianDeployment;
   label: string;
 }> = [
-  { value: "china_mainland", label: "中国内地（北京）" },
-  { value: "international", label: "国际（新加坡）" },
+  { value: "china_mainland", label: "中国内地 (北京)" },
+  { value: "international", label: "国际节点 (新加坡)" },
 ];
 
 export const WHISPER_MODEL_OPTIONS: Array<{
   value: WhisperModel;
   label: string;
 }> = [
-  { value: "small", label: "small" },
-  { value: "medium", label: "medium" },
+  { value: "small", label: "Small (轻量快)" },
+  { value: "medium", label: "Medium (准确)" },
+];
+
+// Added options for Translation & TTS selection in the UI
+export const BAILIAN_TRANSLATION_MODEL_OPTIONS = [
+  { value: "qwen-plus", label: "Qwen-Plus (性价比推荐)" },
+  { value: "qwen-max", label: "Qwen-Max (高质量复杂语境)" },
+  { value: "qwen-turbo", label: "Qwen-Turbo (极速低成本)" },
+];
+
+export const BAILIAN_TTS_MODEL_OPTIONS = [
+  { value: "cosyvoice-v3-flash", label: "CosyVoice-v3-Flash (拟真度极高)" },
+  { value: "cosyvoice-v3-clone", label: "CosyVoice 零样本声音复刻 ( timbres clone )" },
+  { value: "sambert-high-fidelity", label: "Sambert-High-Fidelity (传统高品质)" },
+];
+
+export const BAILIAN_TTS_VOICE_OPTIONS = [
+  { value: "longxiaochun_v3", label: "龙小淳 (活力童声)" },
+  { value: "longwanwan_v3", label: "龙婉婉 (温暖女声)" },
+  { value: "longying_v3", label: "龙颖 (专业女声)" },
+  { value: "longxiaoshu_v3", label: "龙小书 (亲切男声)" },
+  { value: "longxiaobiao_v3", label: "龙小表 (客服男声)" },
 ];

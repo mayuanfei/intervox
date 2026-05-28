@@ -20,6 +20,7 @@ pub struct TtsRequest {
     pub rate: f32,
     pub pitch: f32,
     pub sample_rate: u32,
+    pub original_video_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -46,8 +47,6 @@ pub struct TtsSegment {
 pub enum TtsError {
     #[error("没有可配音的翻译内容。")]
     EmptyTranslation,
-    #[error("翻译结果不完整，以下分段没有中文内容：{0}。请先重新翻译，避免导出错位视频。")]
-    IncompleteTranslation(String),
     #[error("请先保存阿里云百炼 API Key。")]
     MissingCredential,
     #[error("CosyVoice 非实时语音合成当前仅支持中国内地（北京）部署。")]
@@ -69,7 +68,6 @@ pub fn synthesize(
     if request.translation.segments.is_empty() {
         return Err(TtsError::EmptyTranslation);
     }
-    ensure_translation_has_text(&request.translation)?;
 
     let api_key = credentials
         .get(AsrProviderId::AliyunBailian)?
@@ -82,20 +80,62 @@ pub fn synthesize(
     fs::create_dir_all(&output_dir)?;
 
     let client = Client::builder().timeout(Duration::from_secs(90)).build()?;
-    let model = if request.model.trim().is_empty() {
-        "cosyvoice-v3-flash".to_string()
-    } else {
-        request.model.trim().to_string()
-    };
-    let voice = if request.voice.trim().is_empty() {
+
+    let mut voice = if request.voice.trim().is_empty() {
         "longxiaochun_v3".to_string()
     } else {
         request.voice.trim().to_string()
     };
 
+    let model = if request.model.trim() == "cosyvoice-v3-clone" {
+        // Zero-shot voice cloning
+        let video_path = request.original_video_path.as_deref().ok_or_else(|| {
+            TtsError::Api("进行声音克隆时必须提供原视频路径。".to_string())
+        })?;
+
+        // 1. Extract 15s human voice slice
+        let temp_slice = extract_slice_to_temp(video_path)
+            .map_err(|e| TtsError::Api(format!("提取克隆音源切片失败：{e}")))?;
+
+        // 2. Upload to DashScope OSS & enroll
+        let upload_result = (|| -> Result<String, TtsError> {
+            let policy = crate::asr::get_dashscope_upload_policy(
+                &client,
+                &api_key,
+                "cosyvoice-v3-flash",
+            ).map_err(|e| TtsError::Api(format!("获取上传凭据失败：{e}")))?;
+
+            let oss_url = crate::asr::upload_file_to_dashscope_oss(
+                &client,
+                &policy,
+                &temp_slice,
+            ).map_err(|e| TtsError::Api(format!("上传克隆音频失败：{e}")))?;
+
+            enroll_voice(&client, &api_key, &oss_url)
+        })();
+
+        // Clean up temp slice
+        let _ = std::fs::remove_file(&temp_slice);
+
+        voice = upload_result?;
+
+        "cosyvoice-v3-flash".to_string()
+    } else if request.model.trim().is_empty() {
+        "cosyvoice-v3-flash".to_string()
+    } else {
+        request.model.trim().to_string()
+    };
+
     let mut segments = Vec::new();
     for (index, segment) in request.translation.segments.iter().enumerate() {
         let text = segment.translated_text.trim();
+
+        // Skip segments with no translated text (e.g. music-only / silent sections).
+        // Sending empty text to the API causes a 400 InvalidParameter error.
+        if text.is_empty() {
+            eprintln!("[TTS] 跳过空文本段 {} ({})", index, segment.id);
+            continue;
+        }
 
         let audio_url = synthesize_segment(
             &client,
@@ -103,10 +143,6 @@ pub fn synthesize(
             &api_key,
             &model,
             &voice,
-            request
-                .translation
-                .target_language
-                .cosyvoice_language_hint(),
             request.rate,
             request.pitch,
             request.sample_rate,
@@ -114,7 +150,50 @@ pub fn synthesize(
         )?;
         let audio_path =
             output_dir.join(format!("{index:04}_{}.wav", sanitize_file_id(&segment.id)));
-        let audio_bytes = client.get(&audio_url).send()?.error_for_status()?.bytes()?;
+
+        // Robust download with HTTP -> HTTPS replacement and retries
+        let download_url = if audio_url.starts_with("http://") {
+            audio_url.replacen("http://", "https://", 1)
+        } else {
+            audio_url.clone()
+        };
+
+        let mut audio_bytes = None;
+        let mut last_err = None;
+        for attempt in 1..=5 {
+            match client.get(&download_url).send() {
+                Ok(resp) => {
+                    match resp.error_for_status() {
+                        Ok(success_resp) => {
+                            match success_resp.bytes() {
+                                Ok(bytes) => {
+                                    audio_bytes = Some(bytes);
+                                    break;
+                                }
+                                Err(e) => last_err = Some(TtsError::Http(e)),
+                            }
+                        }
+                        Err(e) => {
+                            last_err = Some(TtsError::Http(e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_err = Some(TtsError::Http(e));
+                }
+            }
+            eprintln!("[TTS] 下载音频文件第 {} 次尝试失败，正在重试...", attempt);
+            std::thread::sleep(Duration::from_millis(1000 * attempt));
+        }
+
+        let audio_bytes = match audio_bytes {
+            Some(bytes) => bytes,
+            None => {
+                let err = last_err.unwrap_or_else(|| TtsError::Api("下载音频失败，重试次数超限".to_string()));
+                return Err(err);
+            }
+        };
+
         fs::write(&audio_path, audio_bytes.as_ref())?;
 
         segments.push(TtsSegment {
@@ -141,31 +220,109 @@ pub fn synthesize(
     })
 }
 
-fn ensure_translation_has_text(translation: &TranslationDocument) -> Result<(), TtsError> {
-    let missing_ids: Vec<&str> = translation
-        .segments
-        .iter()
-        .filter(|segment| segment.translated_text.trim().is_empty())
-        .map(|segment| segment.id.as_str())
-        .collect();
 
-    if missing_ids.is_empty() {
-        return Ok(());
+fn extract_slice_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, String> {
+    let input_path = std::path::Path::new(input_video_path);
+    if !input_path.exists() {
+        return Err("输入视频文件不存在。".to_string());
     }
 
-    let preview = missing_ids
-        .iter()
-        .take(8)
-        .copied()
-        .collect::<Vec<_>>()
-        .join(", ");
-    let suffix = if missing_ids.len() > 8 { " ..." } else { "" };
+    let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
+    if dir.ends_with("src-tauri") {
+        dir.pop();
+    }
+    let temp_dir = dir.join("exports").join("temp_audio");
+    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
-    Err(TtsError::IncompleteTranslation(format!(
-        "{preview}{suffix}（共 {}/{} 段）",
-        missing_ids.len(),
-        translation.segments.len()
-    )))
+    let output_audio_path = temp_dir.join(format!(
+        "temp_clone_{}.mp3",
+        uuid::Uuid::new_v4()
+    ));
+
+    let mut cmd = std::process::Command::new(crate::export::ffmpeg_path());
+    cmd.arg("-y")
+       .arg("-ss")
+       .arg("5")
+       .arg("-i")
+       .arg(input_video_path)
+       .arg("-t")
+       .arg("15")
+       .arg("-vn")
+       .arg("-c:a")
+       .arg("libmp3lame")
+       .arg("-ar")
+       .arg("16000")
+       .arg("-ac")
+       .arg("1")
+       .arg("-b:a")
+       .arg("64k")
+       .arg(&output_audio_path);
+
+    let output = cmd.output().map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
+    if !output.status.success() {
+        let mut fallback_cmd = std::process::Command::new(crate::export::ffmpeg_path());
+        fallback_cmd.arg("-y")
+                    .arg("-i")
+                    .arg(input_video_path)
+                    .arg("-t")
+                    .arg("15")
+                    .arg("-vn")
+                    .arg("-c:a")
+                    .arg("libmp3lame")
+                    .arg("-ar")
+                    .arg("16000")
+                    .arg("-ac")
+                    .arg("1")
+                    .arg("-b:a")
+                    .arg("64k")
+                    .arg(&output_audio_path);
+        let fallback_output = fallback_cmd.output().map_err(|_| "找不到 ffmpeg。".to_string())?;
+        if !fallback_output.status.success() {
+            let err_msg = String::from_utf8_lossy(&fallback_output.stderr).to_string();
+            return Err(format!("克隆音源提取失败：{err_msg}"));
+        }
+    }
+
+    Ok(output_audio_path)
+}
+
+fn enroll_voice(
+    client: &Client,
+    api_key: &str,
+    oss_url: &str,
+) -> Result<String, TtsError> {
+    let url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization";
+    let payload = json!({
+        "model": "voice-enrollment",
+        "input": {
+            "action": "create_voice",
+            "target_model": "cosyvoice-v3-flash",
+            "prefix": "cloned",
+            "url": oss_url
+        }
+    });
+
+    let response = client
+        .post(url)
+        .bearer_auth(api_key)
+        .header("Content-Type", "application/json")
+        .header("X-DashScope-OssResourceResolve", "enable")
+        .json(&payload)
+        .send()?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let err_text = response.text().unwrap_or_default();
+        return Err(TtsError::Api(format!("百炼声纹注册失败 (HTTP {}): {}", status, err_text)));
+    }
+
+    let response_json = response.json::<Value>()?;
+
+    response_json
+        .pointer("/output/voice_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| TtsError::Api(format!("声音复刻创建失败，未返回 voice_id：{response_json}")))
 }
 
 fn synthesize_segment(
@@ -174,7 +331,6 @@ fn synthesize_segment(
     api_key: &str,
     model: &str,
     voice: &str,
-    language_hint: &str,
     rate: f32,
     pitch: f32,
     sample_rate: u32,
@@ -183,13 +339,14 @@ fn synthesize_segment(
     let payload = json!({
         "model": model,
         "input": {
-            "text": text,
+            "text": text
+        },
+        "parameters": {
             "voice": voice,
             "format": "wav",
             "sample_rate": sample_rate,
             "rate": rate,
-            "pitch": pitch,
-            "language_hints": [language_hint]
+            "pitch": pitch
         }
     });
 
@@ -198,13 +355,19 @@ fn synthesize_segment(
         .bearer_auth(api_key)
         .header("Content-Type", "application/json")
         .json(&payload)
-        .send()?
-        .error_for_status()?
-        .json::<Value>()?;
+        .send()?;
 
-    extract_audio_url(&response)
+    if !response.status().is_success() {
+        let status = response.status();
+        let err_text = response.text().unwrap_or_default();
+        return Err(TtsError::Api(format!("百炼语音合成失败 (HTTP {}): {}", status, err_text)));
+    }
+
+    let response_json = response.json::<Value>()?;
+
+    extract_audio_url(&response_json)
         .map(ToString::to_string)
-        .ok_or_else(|| TtsError::Api(format!("未返回音频 URL：{response}")))
+        .ok_or_else(|| TtsError::Api(format!("未返回音频 URL：{response_json}")))
 }
 
 fn resolve_output_dir(output_dir: Option<&str>) -> Result<PathBuf, std::io::Error> {

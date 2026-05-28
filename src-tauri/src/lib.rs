@@ -245,6 +245,97 @@ async fn export_dubbed_video(request: ExportRequest) -> Result<ExportResult, Str
     }
 }
 
+#[tauri::command]
+async fn prepare_video_for_playback(input_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        export::prepare_video_for_playback(input_path)
+    })
+    .await
+    .map_err(|error| format!("转码任务异常终止：{error}"))?
+}
+
+#[tauri::command]
+fn select_local_file() -> Result<Option<String>, String> {
+    let file = rfd::FileDialog::new()
+        .add_filter("Video/Audio", &["mp4", "mkv", "avi", "mov", "mp3", "wav", "m4a", "flac"])
+        .pick_file();
+    Ok(file.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn select_local_directory() -> Result<Option<String>, String> {
+    let folder = rfd::FileDialog::new()
+        .pick_folder();
+    Ok(folder.map(|p| p.to_string_lossy().to_string()))
+}
+
+/// Reveal a file in Finder (macOS) / Explorer (Windows) / file manager (Linux).
+#[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("路径不能为空。".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("无法在 Finder 中显示文件：{e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("无法在 Explorer 中显示文件：{e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Try nautilus first, fall back to xdg-open on the parent dir
+        let parent = std::path::Path::new(&path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        std::process::Command::new("xdg-open")
+            .arg(&parent)
+            .spawn()
+            .map_err(|e| format!("无法打开文件管理器：{e}"))?;
+    }
+    Ok(())
+}
+
+/// Open a file with the system default application.
+#[tauri::command]
+fn open_in_default_app(path: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("路径不能为空。".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("无法打开文件：{e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn()
+            .map_err(|e| format!("无法打开文件：{e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("无法打开文件：{e}"))?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -256,7 +347,12 @@ pub fn run() {
             asr_cancel,
             translate_transcript,
             synthesize_tts,
-            export_dubbed_video
+            export_dubbed_video,
+            prepare_video_for_playback,
+            select_local_file,
+            select_local_directory,
+            reveal_in_finder,
+            open_in_default_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

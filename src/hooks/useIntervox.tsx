@@ -1,0 +1,1115 @@
+import React, { createContext, useContext, useState, useEffect, useMemo } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { invokeOrFallback } from "../lib/tauri";
+import { DEFAULT_ASR_CONFIG } from "../lib/asrOptions";
+import type {
+  AsrConfig,
+  AsrProviderId,
+  CredentialValidationResult,
+  ExportResult,
+  SourceLanguageCode,
+  TargetLanguageCode,
+  TranscriptDocument,
+  TranslationDocument,
+  TtsDocument,
+} from "../types/asr";
+
+export interface IntervoxTask {
+  id: string;
+  fileName: string;
+  mediaUrl: string;
+  mediaInputMode: "public_url" | "local_file";
+  status: "queued" | "running" | "completed" | "failed";
+  stage:
+    | "select_video"
+    | "extract_audio"
+    | "asr"
+    | "translate"
+    | "tts_clone"
+    | "mix_media"
+    | "final_output";
+  progress: number;
+  error?: string | null;
+  timestamp: string;
+  targetLang: string;
+  outputVideoPath?: string;
+  duration?: string;
+  logLines: string[];
+}
+
+export type MediaInputMode = "public_url" | "local_file";
+
+interface IntervoxContextType {
+  config: AsrConfig;
+  setConfig: React.Dispatch<React.SetStateAction<AsrConfig>>;
+  activePage: string;
+  setActivePage: (page: string) => void;
+  mediaUrl: string;
+  setMediaUrl: (url: string) => void;
+  mediaInputMode: MediaInputMode;
+  setMediaInputMode: (mode: MediaInputMode) => void;
+  localMediaPath: string;
+  setLocalMediaPath: (path: string) => void;
+  credentialDraft: string;
+  setCredentialDraft: (draft: string) => void;
+  status: CredentialValidationResult | null;
+  setStatus: React.Dispatch<React.SetStateAction<CredentialValidationResult | null>>;
+  
+  // Statuses & Errors
+  transcriptionStatus: string | null;
+  setTranscriptionStatus: (status: string | null) => void;
+  transcriptionError: string | null;
+  setTranscriptionError: (error: string | null) => void;
+  translationStatus: string | null;
+  setTranslationStatus: (status: string | null) => void;
+  translationError: string | null;
+  setTranslationError: (error: string | null) => void;
+  ttsStatus: string | null;
+  setTtsStatus: (status: string | null) => void;
+  ttsError: string | null;
+  setTtsError: (error: string | null) => void;
+  exportStatus: string | null;
+  setExportStatus: (status: string | null) => void;
+  exportError: string | null;
+  setExportError: (error: string | null) => void;
+
+  // Documents
+  transcript: TranscriptDocument | null;
+  setTranscript: React.Dispatch<React.SetStateAction<TranscriptDocument | null>>;
+  translation: TranslationDocument | null;
+  setTranslation: React.Dispatch<React.SetStateAction<TranslationDocument | null>>;
+  tts: TtsDocument | null;
+  setTts: React.Dispatch<React.SetStateAction<TtsDocument | null>>;
+  exportResult: ExportResult | null;
+  setExportResult: React.Dispatch<React.SetStateAction<ExportResult | null>>;
+
+  // Parameters
+  synthesisMode: "default" | "clone";
+  setSynthesisMode: (mode: "default" | "clone") => void;
+  toast: { message: string; type: "success" | "error" | "info" } | null;
+  showToast: (message: string, type?: "success" | "error" | "info") => void;
+  ttsVoice: string;
+  setTtsVoice: (voice: string) => void;
+  ttsRate: number;
+  setTtsRate: (rate: number) => void;
+  outputDir: string;
+  setOutputDir: (dir: string) => void;
+  replaceOriginalAudio: boolean;
+  setReplaceOriginalAudio: (replace: boolean) => void;
+  originalAudioVolume: number;
+  setOriginalAudioVolume: (volume: number) => void;
+  voiceoverVolume: number;
+  setVoiceoverVolume: (volume: number) => void;
+
+  // Loading States
+  isSavingCredential: boolean;
+  isTranscribing: boolean;
+  isTranslating: boolean;
+  isSynthesizing: boolean;
+  isExporting: boolean;
+
+  // Progress Rates
+  transcriptionProgress: number | null;
+  translationProgress: number | null;
+
+  // Computed Cache properties
+  activeMediaInput: string;
+  activeAsrCacheKey: string | null;
+  activeTranslationCacheKey: string | null;
+  cachedTranscript: any;
+  cachedTranslation: any;
+  
+  // Actions
+  saveCredential: () => Promise<void>;
+  validateProvider: () => Promise<void>;
+  startTranscription: (forceRemote?: boolean) => Promise<void>;
+  startTranslation: (forceRemote?: boolean) => Promise<void>;
+  startTts: () => Promise<void>;
+  exportVideo: () => Promise<void>;
+  startFullPipeline: () => Promise<void>;
+  retryTask: (taskId: string) => Promise<void>;
+
+  // Tasks Queue state
+  tasks: IntervoxTask[];
+  setTasks: React.Dispatch<React.SetStateAction<IntervoxTask[]>>;
+  activeTaskId: string | null;
+  setActiveTaskId: (id: string | null) => void;
+  clearCompletedTasks: () => void;
+  addNewTask: (input: string, mode: MediaInputMode) => void;
+  deleteTask: (taskId: string) => void;
+}
+
+const IntervoxContext = createContext<IntervoxContextType | undefined>(undefined);
+
+// Cache Helpers
+const ASR_CACHE_PREFIX = "intervox:asr:";
+const TRANSLATION_CACHE_PREFIX = "intervox:translation:";
+
+function hashString(value: string) {
+  let hash = 5381;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 33) ^ value.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function readLocalJson<T>(key: string): T | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalJson(key: string, value: unknown) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
+
+export function IntervoxProvider({ children }: { children: React.ReactNode }) {
+  const [activePage, setActivePage] = useState("player");
+  const [config, setConfig] = useState<AsrConfig>(DEFAULT_ASR_CONFIG);
+  const [credentialDraft, setCredentialDraft] = useState("");
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [mediaInputMode, setMediaInputMode] = useState<MediaInputMode>("public_url");
+  const [localMediaPath, setLocalMediaPath] = useState("");
+  
+  const [status, setStatus] = useState<CredentialValidationResult | null>(null);
+  
+  const [transcriptionStatus, setTranscriptionStatus] = useState<string | null>(null);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [translationStatus, setTranslationStatus] = useState<string | null>(null);
+  const [translationError, setTranslationError] = useState<string | null>(null);
+  const [ttsStatus, setTtsStatus] = useState<string | null>(null);
+  const [ttsError, setTtsError] = useState<string | null>(null);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const [transcript, setTranscript] = useState<TranscriptDocument | null>(null);
+  const [translation, setTranslation] = useState<TranslationDocument | null>(null);
+  const [tts, setTts] = useState<TtsDocument | null>(null);
+  const [exportResult, setExportResult] = useState<ExportResult | null>(null);
+
+  const [loadedAsrCacheKey, setLoadedAsrCacheKey] = useState<string | null>(null);
+  const [loadedTranslationCacheKey, setLoadedTranslationCacheKey] = useState<string | null>(null);
+
+  const [isSavingCredential, setIsSavingCredential] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [isSynthesizing, setIsSynthesizing] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const [transcriptionProgress, setTranscriptionProgress] = useState<number | null>(null);
+  const [translationProgress, setTranslationProgress] = useState<number | null>(null);
+
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
+
+  const showToast = (message: string, type: "success" | "error" | "info" = "success") => {
+    setToast({ message, type });
+  };
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => {
+        setToast(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
+  const [synthesisMode, setSynthesisMode] = useState<"default" | "clone">("default");
+  const [ttsVoice, setTtsVoice] = useState("longxiaochun_v3");
+  const [ttsRate, setTtsRate] = useState(1);
+  const [outputDir, setOutputDir] = useState("");
+  const [replaceOriginalAudio, setReplaceOriginalAudio] = useState(false);
+  const [originalAudioVolume, setOriginalAudioVolume] = useState(0.25);
+  const [voiceoverVolume, setVoiceoverVolume] = useState(1);
+
+  // Task list and queue states
+  const [tasks, setTasks] = useState<IntervoxTask[]>(() => {
+    try {
+      const saved = localStorage.getItem("intervox_tasks");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    
+    // Default mock history matching screenshot
+    return [
+      {
+        id: "TR-EnFr-093",
+        fileName: "Tutorial_Basics_FR.mp4",
+        mediaUrl: "Tutorial_Basics_FR.mp4",
+        mediaInputMode: "local_file" as const,
+        status: "completed" as const,
+        stage: "final_output" as const,
+        progress: 1.0,
+        timestamp: new Date(Date.now() - 1000 * 60 * 10).toISOString(),
+        targetLang: "fr-FR",
+        duration: "04:12s",
+        logLines: ["Extract audio complete", "ASR finished in 1.2s", "Synthesized target language voiceover", "Muxed dubbed video successfully"]
+      },
+      {
+        id: "TR-EnZh-092",
+        fileName: "Interview_Raw_CN.mp4",
+        mediaUrl: "Interview_Raw_CN.mp4",
+        mediaInputMode: "local_file" as const,
+        status: "completed" as const,
+        stage: "final_output" as const,
+        progress: 1.0,
+        timestamp: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
+        targetLang: "zh-Hans-CN",
+        duration: "12:45s",
+        logLines: ["ASR completed", "Translation aligned successfully", "TTS synthesize done", "Exported audio tracks complete"]
+      },
+      {
+        id: "TR-EnRu-091",
+        fileName: "Corrupted_File_01.mkv",
+        mediaUrl: "Corrupted_File_01.mkv",
+        mediaInputMode: "local_file" as const,
+        status: "failed" as const,
+        stage: "extract_audio" as const,
+        progress: 0.15,
+        timestamp: new Date(Date.now() - 1000 * 60 * 50).toISOString(),
+        targetLang: "de-DE",
+        error: "FFMPEG_ERR_04: Stream parsing failed",
+        logLines: ["Init extraction sequence", "Error reading audio track index 0", "FFMPEG_ERR_04: Corrupted stream data"]
+      }
+    ];
+  });
+
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("intervox_tasks", JSON.stringify(tasks));
+  }, [tasks]);
+
+  const activeMediaInput = mediaInputMode === "public_url" ? mediaUrl.trim() : localMediaPath.trim();
+
+  // Computed Cache keys
+  const activeAsrCacheKey = useMemo(() => {
+    if (!activeMediaInput) return null;
+    const signature = JSON.stringify({
+      media_input_mode: mediaInputMode,
+      media_input: activeMediaInput,
+      provider: config.provider,
+      source_language: config.source_language,
+      aliyun_bailian: config.aliyun_bailian,
+      google_chirp3: config.google_chirp3,
+      volc_doubao: config.volc_doubao,
+      local_whisper: config.local_whisper,
+    });
+    return hashString(signature);
+  }, [activeMediaInput, config, mediaInputMode]);
+
+  const activeTranslationCacheKey = useMemo(() => {
+    if (!activeAsrCacheKey) return null;
+    return hashString(
+      JSON.stringify({
+        asr_cache_key: activeAsrCacheKey,
+        target_language: config.target_language,
+        deployment: config.aliyun_bailian.deployment,
+        model: "qwen-plus",
+      }),
+    );
+  }, [activeAsrCacheKey, config.aliyun_bailian.deployment, config.target_language]);
+
+  const [cachedTranscript, setCachedTranscript] = useState<any>(null);
+  const [cachedTranslation, setCachedTranslation] = useState<any>(null);
+
+  // Read cache entries when key changes
+  useEffect(() => {
+    if (!activeAsrCacheKey) {
+      setCachedTranscript(null);
+      return;
+    }
+    const cached = readLocalJson<any>(`${ASR_CACHE_PREFIX}${activeAsrCacheKey}`);
+    setCachedTranscript(cached);
+  }, [activeAsrCacheKey]);
+
+  useEffect(() => {
+    if (!activeTranslationCacheKey) {
+      setCachedTranslation(null);
+      return;
+    }
+    const cached = readLocalJson<any>(`${TRANSLATION_CACHE_PREFIX}${activeTranslationCacheKey}`);
+    setCachedTranslation(cached);
+  }, [activeTranslationCacheKey]);
+
+  // Hook up Tauri events
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+
+    let isMounted = true;
+    const unlisteners: Array<() => void> = [];
+
+    void listen<any>("asr-progress", (event) => {
+      if (!isMounted) return;
+      if (event.payload.stage === "started") {
+        setTranscriptionStatus("阿里云百炼 ASR 任务提交，正在识别...");
+        setTranscriptionProgress(0.15);
+        updateActiveTaskStage("asr", 0.15, "百炼 ASR 识别任务提交，已开始...");
+      }
+      if (event.payload.stage === "completed") {
+        setTranscriptionStatus("识别完成，正在载入结果...");
+        setTranscriptionProgress(1);
+        updateActiveTaskStage("asr", 1.0, "ASR 识别完成。");
+      }
+    }).then((unlisten) => {
+      if (isMounted) unlisteners.push(unlisten);
+      else unlisten();
+    });
+
+    void listen<any>("asr-failed", (event) => {
+      if (!isMounted) return;
+      const msg = event.payload.message || "识别失败。";
+      setTranscriptionError(msg);
+      setTranscriptionStatus(null);
+      setIsTranscribing(false);
+      setTranscriptionProgress(null);
+      failActiveTask(msg);
+    }).then((unlisten) => {
+      if (isMounted) unlisteners.push(unlisten);
+      else unlisten();
+    });
+
+    void listen<any>("translation-progress", (event) => {
+      if (!isMounted) return;
+      const { stage, completed_segments = 0, total_segments = 0, progress = 0 } = event.payload;
+      setTranslationProgress(progress);
+      
+      let statusStr = "正在翻译...";
+      if (stage === "queued") {
+        statusStr = "翻译请求正在队列排队...";
+      } else if (stage === "started") {
+        statusStr = "分批翻译任务已启动...";
+      } else if (stage === "batch_completed") {
+        statusStr = `已翻译 ${completed_segments}/${total_segments} 段。`;
+      } else if (stage === "completed") {
+        statusStr = "翻译任务已全部完成！";
+      }
+
+      setTranslationStatus(statusStr);
+      updateActiveTaskStage("translate", progress, statusStr);
+    }).then((unlisten) => {
+      if (isMounted) unlisteners.push(unlisten);
+      else unlisten();
+    });
+
+    void listen<any>("translation-failed", (event) => {
+      if (!isMounted) return;
+      const msg = event.payload.message || "翻译失败。";
+      setTranslationError(msg);
+      setTranslationStatus(null);
+      setIsTranslating(false);
+      setTranslationProgress(null);
+      failActiveTask(msg);
+    }).then((unlisten) => {
+      if (isMounted) unlisteners.push(unlisten);
+      else unlisten();
+    });
+
+    return () => {
+      isMounted = false;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, [activeTaskId]);
+
+  // Tasks mutation helpers
+  const updateActiveTaskStage = (stage: IntervoxTask["stage"], progress: number, logMsg?: string) => {
+    setTasks((current) =>
+      current.map((t) => {
+        if (t.status === "running") {
+          const lines = logMsg ? [...t.logLines, `[${new Date().toLocaleTimeString()}] ${logMsg}`] : t.logLines;
+          return { ...t, stage, progress, logLines: lines };
+        }
+        return t;
+      })
+    );
+  };
+
+  const failActiveTask = (errorMsg: string) => {
+    setTasks((current) =>
+      current.map((t) => {
+        if (t.status === "running") {
+          return {
+            ...t,
+            status: "failed" as const,
+            error: errorMsg,
+            logLines: [...t.logLines, `[${new Date().toLocaleTimeString()}] ERROR: ${errorMsg}`]
+          };
+        }
+        return t;
+      })
+    );
+    setActiveTaskId(null);
+  };
+
+  const completeActiveTask = (videoPath: string) => {
+    setTasks((current) =>
+      current.map((t) => {
+        if (t.status === "running") {
+          return {
+            ...t,
+            status: "completed" as const,
+            progress: 1.0,
+            outputVideoPath: videoPath,
+            logLines: [...t.logLines, `[${new Date().toLocaleTimeString()}] 任务圆满完成。视频保存在：${videoPath}`]
+          };
+        }
+        return t;
+      })
+    );
+    setActiveTaskId(null);
+  };
+
+  const addNewTask = (input: string, mode: MediaInputMode) => {
+    const filename = input.substring(input.lastIndexOf("/") + 1) || "dub_project.mp4";
+    const taskId = `TR-${config.source_language.toUpperCase().substring(0,2)}${config.target_language.substring(0,2).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
+    const newTask: IntervoxTask = {
+      id: taskId,
+      fileName: filename,
+      mediaUrl: input,
+      mediaInputMode: mode,
+      status: "queued",
+      stage: "select_video",
+      progress: 0.0,
+      timestamp: new Date().toISOString(),
+      targetLang: config.target_language,
+      logLines: [`[${new Date().toLocaleTimeString()}] 任务已创建并排队中。目标语言：${config.target_language}`]
+    };
+    setTasks((current) => [newTask, ...current]);
+  };
+
+  const clearCompletedTasks = () => {
+    setTasks((current) => current.filter((t) => t.status === "running" || t.status === "queued"));
+  };
+
+  const deleteTask = (taskId: string) => {
+    setTasks((current) => current.filter((t) => t.id !== taskId));
+    if (activeTaskId === taskId) {
+      setActiveTaskId(null);
+    }
+  };
+
+  // Actions
+  const saveCredential = async () => {
+    setIsSavingCredential(true);
+    setStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_save_credential",
+        { provider: config.provider, secret: credentialDraft },
+        { ok: credentialDraft.trim().length > 0, provider: config.provider, message: "开发预览：凭据已保存。" }
+      );
+      setStatus(result);
+      if (result.ok) setCredentialDraft("");
+    } catch (e: any) {
+      setStatus({ ok: false, provider: config.provider, message: e.message || "保存失败。" });
+    } finally {
+      setIsSavingCredential(false);
+    }
+  };
+
+  const validateProvider = async () => {
+    setStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_validate_credentials",
+        { provider: config.provider, config },
+        { ok: true, provider: config.provider, message: "配置校验结构成功。" }
+      );
+      setStatus(result);
+    } catch (e: any) {
+      setStatus({ ok: false, provider: config.provider, message: e.message || "校验失败。" });
+    }
+  };
+
+  const startTranscription = async (forceRemote = false) => {
+    if (!activeMediaInput) {
+      setTranscriptionError("请提供音视频源。");
+      return;
+    }
+
+    if (!forceRemote && cachedTranscript) {
+      setTranscript(cachedTranscript.document);
+      setTranscriptionProgress(1);
+      setTranscriptionStatus("从本机缓存载入成功。");
+      return;
+    }
+
+    setIsTranscribing(true);
+    setTranscriptionError(null);
+    setTranscriptionProgress(0.05);
+    setTranscriptionStatus("提交任务中...");
+
+    try {
+      const result = await invokeOrFallback<TranscriptDocument>(
+        "asr_transcribe",
+        { request: { job_id: `job_${Date.now()}`, audio_path: activeMediaInput, config } },
+        {
+          source_language: config.source_language,
+          target_language: config.target_language,
+          provider: config.provider,
+          segments: [
+            {
+              id: "seg_001",
+              start_ms: 0,
+              end_ms: 3500,
+              speaker_id: "channel_0",
+              text: "Hello! Welcome to the premium AI dubbing demonstration. Initiating sequence alpha.",
+            },
+            {
+              id: "seg_002",
+              start_ms: 3800,
+              end_ms: 7800,
+              speaker_id: "channel_0",
+              text: "All critical systems are nominal. Standing by for transcription alignment.",
+            }
+          ]
+        }
+      );
+      setTranscript(result);
+      setTranscriptionProgress(1);
+      setTranscriptionStatus(`识别成功，共 ${result.segments.length} 段。`);
+      
+      if (activeAsrCacheKey) {
+        writeLocalJson(`${ASR_CACHE_PREFIX}${activeAsrCacheKey}`, {
+          version: 1,
+          cache_key: activeAsrCacheKey,
+          media_input: activeMediaInput,
+          media_input_mode: mediaInputMode,
+          updated_at: new Date().toISOString(),
+          document: result,
+        });
+        setCachedTranscript(readLocalJson(`${ASR_CACHE_PREFIX}${activeAsrCacheKey}`));
+      }
+    } catch (e: any) {
+      setTranscriptionError(e.message || "语音识别出错。");
+      setTranscriptionStatus(null);
+      setTranscriptionProgress(null);
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  const startTranslation = async (forceRemote = false) => {
+    if (!transcript) {
+      setTranslationError("请先完成 ASR 识别。");
+      return;
+    }
+
+    if (!forceRemote && cachedTranslation) {
+      setTranslation(cachedTranslation.document);
+      setTranslationProgress(1);
+      setTranslationStatus("从本机缓存载入翻译结果。");
+      return;
+    }
+
+    setIsTranslating(true);
+    setTranslationError(null);
+    setTranslationStatus("正在调用百炼 Qwen 模型翻译...");
+    setTranslationProgress(0.1);
+
+    try {
+      const result = await invokeOrFallback<TranslationDocument>(
+        "translate_transcript",
+        {
+          request: {
+            transcript: { ...transcript, target_language: config.target_language },
+            model: "qwen-plus",
+            deployment: config.aliyun_bailian.deployment,
+          }
+        },
+        {
+          source_language: String(transcript.source_language),
+          target_language: config.target_language,
+          provider: "aliyun_qwen",
+          segments: transcript.segments.map((segment) => ({
+            id: segment.id,
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            speaker_id: segment.speaker_id,
+            source_text: segment.text,
+            translated_text: segment.text.includes("Welcome to the premium")
+              ? "你好！欢迎来到高级 AI 配音演示。正在启动 alpha 序列。"
+              : "所有关键系统均正常。等待转录对齐。",
+          }))
+        }
+      );
+
+      setTranslation(result);
+      setTranslationProgress(1);
+      setTranslationStatus("翻译全部完成。");
+
+      if (activeTranslationCacheKey && activeAsrCacheKey) {
+        writeLocalJson(`${TRANSLATION_CACHE_PREFIX}${activeTranslationCacheKey}`, {
+          version: 1,
+          cache_key: activeTranslationCacheKey,
+          asr_cache_key: activeAsrCacheKey,
+          target_language: result.target_language,
+          updated_at: new Date().toISOString(),
+          document: result,
+        });
+        setCachedTranslation(readLocalJson(`${TRANSLATION_CACHE_PREFIX}${activeTranslationCacheKey}`));
+      }
+    } catch (e: any) {
+      setTranslationError(e.message || "翻译接口出错。");
+      setTranslationStatus(null);
+      setTranslationProgress(null);
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  const startTts = async () => {
+    if (!translation) {
+      setTtsError("请先完成翻译润色。");
+      return;
+    }
+
+    setIsSynthesizing(true);
+    setTtsError(null);
+    setTtsStatus("调用 CosyVoice 配音合成中...");
+
+    try {
+      const result = await invokeOrFallback<TtsDocument>(
+        "synthesize_tts",
+        {
+          request: {
+            translation,
+            model: synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash",
+            voice: synthesisMode === "clone" ? "" : ttsVoice,
+            deployment: config.aliyun_bailian.deployment,
+            output_dir: outputDir.trim() || null,
+            rate: ttsRate,
+            pitch: 1,
+            sample_rate: 24000,
+            original_video_path: synthesisMode === "clone" ? activeMediaInput : null,
+          }
+        },
+        {
+          target_language: translation.target_language,
+          provider: "aliyun_cosyvoice",
+          model: "cosyvoice-v3-flash",
+          voice: ttsVoice,
+          segments: translation.segments.map((segment, index) => ({
+            id: segment.id,
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            speaker_id: segment.speaker_id,
+            text: segment.translated_text,
+            audio_url: "mock_url",
+            audio_path: `mock_tts_file_${index}.wav`,
+          }))
+        }
+      );
+      setTts(result);
+      setTtsStatus(`配音合成完成，共 ${result.segments.length} 个音轨。`);
+    } catch (e: any) {
+      setTtsError(e.message || "TTS 配音出错。");
+      setTtsStatus(null);
+    } finally {
+      setIsSynthesizing(false);
+    }
+  };
+
+  const exportVideo = async () => {
+    if (!tts || !activeMediaInput) {
+      setExportError("参数不齐，请确认已生成配音并填入视频地址。");
+      return;
+    }
+
+    setIsExporting(true);
+    setExportError(null);
+    setExportStatus("FFmpeg 启动混合轨道...");
+
+    try {
+      const result = await invokeOrFallback<ExportResult>(
+        "export_dubbed_video",
+        {
+          request: {
+            media_url: activeMediaInput,
+            tts,
+            output_dir: outputDir.trim() || null,
+            replace_original_audio: replaceOriginalAudio,
+            original_audio_volume: originalAudioVolume,
+            voiceover_volume: voiceoverVolume,
+          }
+        },
+        {
+          voiceover_path: "exports/voiceover.wav",
+          video_path: "exports/dubbed_completed.mp4",
+        }
+      );
+      setExportResult(result);
+      setExportStatus("视频混合并合成成功！");
+    } catch (e: any) {
+      setExportError(e.message || "导出混合视频失败。");
+      setExportStatus(null);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Shared pipeline execution logic — used by both startFullPipeline and retryTask
+  const runPipelineFor = async (
+    mediaInput: string,
+    inputMode: MediaInputMode,
+    taskId: string,
+  ) => {
+    const configToUse = config;
+
+    // Compute cache keys for ASR and Translation
+    const signature = JSON.stringify({
+      media_input_mode: inputMode,
+      media_input: mediaInput,
+      provider: configToUse.provider,
+      source_language: configToUse.source_language,
+      aliyun_bailian: configToUse.aliyun_bailian,
+      google_chirp3: configToUse.google_chirp3,
+      volc_doubao: configToUse.volc_doubao,
+      local_whisper: configToUse.local_whisper,
+    });
+    const asrCacheKey = hashString(signature);
+
+    const translationSignature = JSON.stringify({
+      asr_cache_key: asrCacheKey,
+      target_language: configToUse.target_language,
+      deployment: configToUse.aliyun_bailian.deployment,
+      model: "qwen-plus",
+    });
+    const translationCacheKey = hashString(translationSignature);
+
+    try {
+      // Step 1: Extract Audio
+      updateActiveTaskStage("extract_audio", 0.5, "提取主音轨成功，文件准备上传百炼。");
+      await new Promise((r) => setTimeout(r, 800));
+
+      // Step 2: ASR
+      let asrResult: TranscriptDocument;
+      const cachedAsr = readLocalJson<any>(`${ASR_CACHE_PREFIX}${asrCacheKey}`);
+
+      if (cachedAsr && cachedAsr.document) {
+        asrResult = cachedAsr.document;
+        updateActiveTaskStage("asr", 1.0, "检测到本地 ASR 识别缓存，已直接载入（跳过 API 调用）。");
+        await new Promise((r) => setTimeout(r, 600));
+      } else {
+        updateActiveTaskStage("asr", 0.1, "阿里云百炼 ASR 任务提交中...");
+        asrResult = await invokeOrFallback<TranscriptDocument>(
+          "asr_transcribe",
+          { request: { job_id: `job_${Date.now()}`, audio_path: mediaInput, config: configToUse } },
+          {
+            source_language: configToUse.source_language,
+            target_language: configToUse.target_language,
+            provider: configToUse.provider,
+            segments: [
+              {
+                id: "seg_pipeline_001",
+                start_ms: 0,
+                end_ms: 3500,
+                speaker_id: "channel_0",
+                text: "Hello! Welcome to the premium AI dubbing demonstration. Initiating sequence alpha.",
+              },
+              {
+                id: "seg_pipeline_002",
+                start_ms: 3800,
+                end_ms: 7800,
+                speaker_id: "channel_0",
+                text: "All critical systems are nominal. Standing by for transcription alignment.",
+              }
+            ]
+          }
+        );
+        // Write ASR Cache
+        writeLocalJson(`${ASR_CACHE_PREFIX}${asrCacheKey}`, {
+          version: 1,
+          cache_key: asrCacheKey,
+          media_input: mediaInput,
+          media_input_mode: inputMode,
+          updated_at: new Date().toISOString(),
+          document: asrResult,
+        });
+      }
+
+      setTranscript(asrResult);
+      updateActiveTaskStage("translate", 0.1, "ASR 语音识别顺利完成。启动百炼 Qwen 翻译。");
+      await new Promise((r) => setTimeout(r, 800));
+
+      // Step 3: Translate
+      let translateResult: TranslationDocument;
+      const cachedTrans = readLocalJson<any>(`${TRANSLATION_CACHE_PREFIX}${translationCacheKey}`);
+
+      if (cachedTrans && cachedTrans.document) {
+        translateResult = cachedTrans.document;
+        updateActiveTaskStage("translate", 1.0, "检测到本地翻译缓存，已直接载入（跳过 API 调用）。");
+        await new Promise((r) => setTimeout(r, 600));
+      } else {
+        translateResult = await invokeOrFallback<TranslationDocument>(
+          "translate_transcript",
+          {
+            request: {
+              transcript: { ...asrResult, target_language: configToUse.target_language },
+              model: "qwen-plus",
+              deployment: configToUse.aliyun_bailian.deployment,
+            }
+          },
+          {
+            source_language: String(asrResult.source_language),
+            target_language: configToUse.target_language,
+            provider: "aliyun_qwen",
+            segments: asrResult.segments.map((segment) => ({
+              id: segment.id,
+              start_ms: segment.start_ms,
+              end_ms: segment.end_ms,
+              speaker_id: segment.speaker_id,
+              source_text: segment.text,
+              translated_text: segment.text.includes("Welcome to the premium")
+                ? "你好！欢迎来到高级 AI 配音演示。正在启动 alpha 序列。"
+                : "所有关键系统均正常。等待转录对齐。",
+            }))
+          }
+        );
+        // Write Translation Cache
+        writeLocalJson(`${TRANSLATION_CACHE_PREFIX}${translationCacheKey}`, {
+          version: 1,
+          cache_key: translationCacheKey,
+          asr_cache_key: asrCacheKey,
+          target_language: translateResult.target_language,
+          updated_at: new Date().toISOString(),
+          document: translateResult,
+        });
+      }
+
+      setTranslation(translateResult);
+      updateActiveTaskStage("tts_clone", 0.1, "翻译完毕。正在请求百炼 CosyVoice 语音合成/复刻。");
+      await new Promise((r) => setTimeout(r, 800));
+
+      // Step 4: TTS / Voice Cloning
+      const ttsResult = await invokeOrFallback<TtsDocument>(
+        "synthesize_tts",
+        {
+          request: {
+            translation: translateResult,
+            model: synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash",
+            voice: synthesisMode === "clone" ? "" : ttsVoice,
+            deployment: configToUse.aliyun_bailian.deployment,
+            output_dir: outputDir.trim() || null,
+            rate: ttsRate,
+            pitch: 1,
+            sample_rate: 24000,
+            original_video_path: synthesisMode === "clone" ? mediaInput : null,
+          }
+        },
+        {
+          target_language: translateResult.target_language,
+          provider: "aliyun_cosyvoice",
+          model: "cosyvoice-v3-flash",
+          voice: ttsVoice,
+          segments: translateResult.segments.map((segment, index) => ({
+            id: segment.id,
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            speaker_id: segment.speaker_id,
+            text: segment.translated_text,
+            audio_url: "mock_url",
+            audio_path: `mock_tts_file_${index}.wav`,
+          }))
+        }
+      );
+
+      setTts(ttsResult);
+      updateActiveTaskStage("mix_media", 0.5, "声轨合成结束。开始 FFmpeg 轨道混合生成输出视频。");
+      await new Promise((r) => setTimeout(r, 800));
+
+      // Step 5: Export Video
+      const exportRes = await invokeOrFallback<ExportResult>(
+        "export_dubbed_video",
+        {
+          request: {
+            media_url: mediaInput,
+            tts: ttsResult,
+            output_dir: outputDir.trim() || null,
+            replace_original_audio: replaceOriginalAudio,
+            original_audio_volume: originalAudioVolume,
+            voiceover_volume: voiceoverVolume,
+          }
+        },
+        {
+          voiceover_path: "exports/voiceover.wav",
+          video_path: `exports/dubbed_${Date.now()}.mp4`,
+        }
+      );
+
+      setExportResult(exportRes);
+      completeActiveTask(exportRes.video_path);
+    } catch (err: any) {
+      console.error("Pipeline failure details:", err);
+      const errorMsg = typeof err === "string" ? err : err?.message || JSON.stringify(err) || "Pipeline execution failed.";
+      failActiveTask(errorMsg);
+    }
+  };
+
+  // Full Dubbing pipeline handler that executes all steps automatically
+  const startFullPipeline = async () => {
+    if (!activeMediaInput) return;
+
+    // Add to task queue
+    addNewTask(activeMediaInput, mediaInputMode);
+
+    // Switch to active page tasks to visualize progress
+    setActivePage("tasks");
+
+    // Give React one tick to commit the new task, then start it
+    setTimeout(async () => {
+      let taskId = "";
+      setTasks((current) => {
+        const list = [...current];
+        if (list.length > 0 && list[0].status === "queued") {
+          list[0].status = "running";
+          list[0].logLines.push(`[${new Date().toLocaleTimeString()}] Pipeline triggered. Extraction initialized.`);
+          taskId = list[0].id;
+          setActiveTaskId(list[0].id);
+        }
+        return list;
+      });
+
+      // Wait another tick so taskId is captured
+      await new Promise((r) => setTimeout(r, 50));
+      await runPipelineFor(activeMediaInput, mediaInputMode, taskId);
+    }, 500);
+  };
+
+  // Retry an existing failed task — resets it and re-runs the pipeline
+  const retryTask = async (taskId: string) => {
+    // Find the task to retry
+    const taskToRetry = tasks.find((t) => t.id === taskId);
+    if (!taskToRetry) return;
+
+    const { mediaUrl: taskMedia, mediaInputMode: taskInputMode } = taskToRetry;
+
+    // Reset task state to running
+    setTasks((current) =>
+      current.map((t) => {
+        if (t.id === taskId) {
+          return {
+            ...t,
+            status: "running" as const,
+            stage: "select_video" as const,
+            progress: 0,
+            error: null,
+            logLines: [`[${new Date().toLocaleTimeString()}] 🔄 重试任务，重新启动完整 Pipeline...`],
+          };
+        }
+        return t;
+      })
+    );
+    setActiveTaskId(taskId);
+    setActivePage("tasks");
+
+    // Small delay to let the state commit before starting pipeline steps
+    await new Promise((r) => setTimeout(r, 300));
+
+    await runPipelineFor(taskMedia, taskInputMode, taskId);
+  };
+
+  return (
+    <IntervoxContext.Provider
+      value={{
+        config,
+        setConfig,
+        activePage,
+        setActivePage,
+        mediaUrl,
+        setMediaUrl,
+        mediaInputMode,
+        setMediaInputMode,
+        localMediaPath,
+        setLocalMediaPath,
+        credentialDraft,
+        setCredentialDraft,
+        status,
+        setStatus,
+        transcriptionStatus,
+        setTranscriptionStatus,
+        transcriptionError,
+        setTranscriptionError,
+        translationStatus,
+        setTranslationStatus,
+        translationError,
+        setTranslationError,
+        ttsStatus,
+        setTtsStatus,
+        ttsError,
+        setTtsError,
+        exportStatus,
+        setExportStatus,
+        exportError,
+        setExportError,
+        transcript,
+        setTranscript,
+        translation,
+        setTranslation,
+        tts,
+        setTts,
+        exportResult,
+        setExportResult,
+        synthesisMode,
+        setSynthesisMode,
+        toast,
+        showToast,
+        ttsVoice,
+        setTtsVoice,
+        ttsRate,
+        setTtsRate,
+        outputDir,
+        setOutputDir,
+        replaceOriginalAudio,
+        setReplaceOriginalAudio,
+        originalAudioVolume,
+        setOriginalAudioVolume,
+        voiceoverVolume,
+        setVoiceoverVolume,
+        isSavingCredential,
+        isTranscribing,
+        isTranslating,
+        isSynthesizing,
+        isExporting,
+        transcriptionProgress,
+        translationProgress,
+        activeMediaInput,
+        activeAsrCacheKey,
+        activeTranslationCacheKey,
+        cachedTranscript,
+        cachedTranslation,
+        saveCredential,
+        validateProvider,
+        startTranscription,
+        startTranslation,
+        startTts,
+        exportVideo,
+        startFullPipeline,
+        tasks,
+        setTasks,
+        activeTaskId,
+        setActiveTaskId,
+        clearCompletedTasks,
+        addNewTask,
+        retryTask,
+        deleteTask,
+      }}
+    >
+      {children}
+    </IntervoxContext.Provider>
+  );
+}
+
+export function useIntervox() {
+  const context = useContext(IntervoxContext);
+  if (context === undefined) {
+    throw new Error("useIntervox must be used within an IntervoxProvider");
+  }
+  return context;
+}

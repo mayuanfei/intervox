@@ -88,7 +88,7 @@ fn ffmpeg_command() -> Command {
     Command::new(ffmpeg_path())
 }
 
-fn ffmpeg_path() -> PathBuf {
+pub fn ffmpeg_path() -> PathBuf {
     if let Some(path) = std::env::var_os("FFMPEG_PATH").filter(|path| !path.is_empty()) {
         return PathBuf::from(path);
     }
@@ -335,6 +335,66 @@ fn resolve_output_dir(output_dir: Option<&str>) -> Result<PathBuf, std::io::Erro
     Ok(dir
         .join("exports")
         .join(format!("video_{}", Uuid::new_v4())))
+}
+
+pub fn prepare_video_for_playback(input_path: String) -> Result<String, String> {
+    let path = Path::new(&input_path);
+    if !path.exists() {
+        return Err("视频文件不存在。".to_string());
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // Standard webview playable formats
+    if ext == "mp4" || ext == "mov" || ext == "m4v" || ext == "mp3" || ext == "wav" || ext == "m4a" {
+        return Ok(input_path);
+    }
+
+    // Otherwise, fast remux to temp mp4
+    let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
+    if dir.ends_with("src-tauri") {
+        dir.pop();
+    }
+    let temp_dir = dir.join("exports").join("temp_playback");
+    fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+
+    // Create a deterministic hash/name based on file path to avoid redundant transcoding
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    input_path.hash(&mut hasher);
+    let output_path = temp_dir.join(format!("playback_temp_{:x}.mp4", hasher.finish()));
+
+    if output_path.exists() {
+        return Ok(output_path.to_string_lossy().to_string());
+    }
+
+    // Run FFmpeg: copy video, transcode audio to AAC
+    let mut cmd = ffmpeg_command();
+    cmd.arg("-y")
+       .arg("-i")
+       .arg(&input_path)
+       .arg("-c:v")
+       .arg("copy")
+       .arg("-c:a")
+       .arg("aac")
+       .arg("-map")
+       .arg("0:v:0?")
+       .arg("-map")
+       .arg("0:a:0?")
+       .arg(&output_path);
+
+    let output = cmd.output().map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
+    if !output.status.success() {
+        let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(format!("转码失败：{err_msg}"));
+    }
+
+    Ok(output_path.to_string_lossy().to_string())
 }
 
 #[cfg(test)]
