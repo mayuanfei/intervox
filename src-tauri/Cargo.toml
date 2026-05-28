@@ -2,7 +2,7 @@
 name = "intervox"
 version = "0.1.0"
 description = "AI video translation and dubbing desktop app"
-authors = ["InterVox"]
+authors = ["intervox"]
 edition = "2021"
 
 [lib]
