@@ -613,7 +613,10 @@ fn synthesize_volc_segment(
             }
         };
 
-        return Err(TtsError::Api(format!("火山引擎 TTS 未返回有效音频数据。原因：{}", err_detail)));
+        return Err(TtsError::Api(format!(
+            "火山引擎 TTS 未返回有效音频数据（资源ID: {}, 音色: {}）。原因：{}",
+            resource_id, voice_type, err_detail
+        )));
     }
 
     fs::write(output_path, &audio_data)?;
