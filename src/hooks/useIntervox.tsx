@@ -257,7 +257,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (config.provider === "volc_doubao") {
-      setTranslationModel("ep-20260528-doubao-pro");
+      setTranslationModel("");
       setTtsVoice("zh_female_vv_uranus_bigtts");
     } else {
       setTranslationModel("qwen-plus");
@@ -727,9 +727,14 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    if (config.provider === "volc_doubao" && !translationModel.trim()) {
+      setTranslationError("请先在配置界面中输入火山方舟的「推理接入点 ID」（以 ep- 开头）。");
+      return;
+    }
+
     setIsTranslating(true);
     setTranslationError(null);
-    setTranslationStatus("正在调用百炼 Qwen 模型翻译...");
+    setTranslationStatus(config.provider === "volc_doubao" ? "正在调用火山方舟大模型翻译..." : "正在调用百炼 Qwen 模型翻译...");
     setTranslationProgress(0.1);
 
     try {
@@ -957,8 +962,12 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       }
 
       setTranscript(asrResult);
-      updateActiveTaskStage("translate", 0.1, "ASR 语音识别顺利完成。启动百炼 Qwen 翻译。");
+      updateActiveTaskStage("translate", 0.1, configToUse.provider === "volc_doubao" ? "ASR 语音识别顺利完成。启动火山方舟翻译。" : "ASR 语音识别顺利完成。启动百炼 Qwen 翻译。");
       await new Promise((r) => setTimeout(r, 800));
+
+      if (configToUse.provider === "volc_doubao" && !translationModel.trim()) {
+        throw new Error("请先在配置界面中输入火山方舟的「推理接入点 ID」（以 ep- 开头）。");
+      }
 
       // Step 3: Translate
       let translateResult: TranslationDocument;

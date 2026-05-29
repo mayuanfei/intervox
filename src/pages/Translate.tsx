@@ -232,19 +232,34 @@ export function Translate() {
 
                 <div className="space-y-1">
                   <label className="th-text-3 text-[10px] uppercase font-bold">
-                    Translation Model
+                    {config.provider === "volc_doubao" ? "Doubao Translation Endpoint ID" : "Translation Model"}
                   </label>
-                  <select
-                    value={translationModel}
-                    onChange={(e) => setTranslationModel(e.target.value)}
-                    className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                  >
-                    {(config.provider === "volc_doubao" ? DOUBAO_TRANSLATION_MODEL_OPTIONS : BAILIAN_TRANSLATION_MODEL_OPTIONS).map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                  {config.provider === "volc_doubao" ? (
+                    <div className="space-y-1">
+                      <input
+                        type="text"
+                        value={translationModel}
+                        onChange={(e) => setTranslationModel(e.target.value)}
+                        placeholder="请输入您的推理接入点 ID (ep-2024xxxxxxxx-xxxxx)"
+                        className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 font-mono"
+                      />
+                      <p className="text-[10px] th-text-muted mt-1 leading-relaxed">
+                        请前往火山引擎「火山方舟 / 在线推理 / 推理接入点」创建一个大模型接入点并复制其 ID（以 ep- 开头）。
+                      </p>
+                    </div>
+                  ) : (
+                    <select
+                      value={translationModel}
+                      onChange={(e) => setTranslationModel(e.target.value)}
+                      className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
+                    >
+                      {BAILIAN_TRANSLATION_MODEL_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
 
                 {config.provider === "aliyun_bailian" && (
