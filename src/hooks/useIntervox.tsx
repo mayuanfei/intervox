@@ -593,14 +593,6 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       setVolcStatus(result);
       if (result.ok) {
         setVolcCredentialDraft("");
-        // Also save app_id to config
-        setConfig((prev) => ({
-          ...prev,
-          volc_doubao: {
-            ...prev.volc_doubao,
-            app_id: volcAppIdDraft.trim(),
-          },
-        }));
       }
     } catch (e: any) {
       setVolcStatus({ ok: false, provider: "volc_doubao" as any, message: e.message || "保存失败。" });
