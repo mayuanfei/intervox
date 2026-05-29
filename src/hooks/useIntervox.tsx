@@ -257,7 +257,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (config.provider === "volc_doubao") {
-      setTranslationModel("");
+      setTranslationModel("doubao-seed-2-0-lite-260428");
       setTtsVoice("zh_female_vv_uranus_bigtts");
     } else {
       setTranslationModel("qwen-plus");
@@ -728,7 +728,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (config.provider === "volc_doubao" && !translationModel.trim()) {
-      setTranslationError("请先在配置界面中输入火山方舟的「推理接入点 ID」（以 ep- 开头）。");
+      setTranslationError("请先在配置界面中输入火山方舟的「推理接入点 ID」（以 ep- 开头）或模型标识符（如 doubao-seed-2-0-lite-260428）。");
       return;
     }
 
@@ -966,7 +966,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       await new Promise((r) => setTimeout(r, 800));
 
       if (configToUse.provider === "volc_doubao" && !translationModel.trim()) {
-        throw new Error("请先在配置界面中输入火山方舟的「推理接入点 ID」（以 ep- 开头）。");
+        throw new Error("请先在配置界面中输入火山方舟的「推理接入点 ID」（以 ep- 开头）或模型标识符（如 doubao-seed-2-0-lite-260428）。");
       }
 
       // Step 3: Translate

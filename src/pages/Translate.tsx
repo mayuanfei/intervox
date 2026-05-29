@@ -232,7 +232,7 @@ export function Translate() {
 
                 <div className="space-y-1">
                   <label className="th-text-3 text-[10px] uppercase font-bold">
-                    {config.provider === "volc_doubao" ? "Doubao Translation Endpoint ID" : "Translation Model"}
+                    {config.provider === "volc_doubao" ? "Doubao Model ID / Endpoint ID" : "Translation Model"}
                   </label>
                   {config.provider === "volc_doubao" ? (
                     <div className="space-y-1">
@@ -240,11 +240,11 @@ export function Translate() {
                         type="text"
                         value={translationModel}
                         onChange={(e) => setTranslationModel(e.target.value)}
-                        placeholder="请输入您的推理接入点 ID (ep-2024xxxxxxxx-xxxxx)"
+                        placeholder="请输入模型标识符 (如 doubao-seed-2-0-lite-260428) 或接入点 ID"
                         className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 font-mono"
                       />
                       <p className="text-[10px] th-text-muted mt-1 leading-relaxed">
-                        请前往火山引擎「火山方舟 / 在线推理 / 推理接入点」创建一个大模型接入点并复制其 ID（以 ep- 开头）。
+                        默认使用官方预置大模型 <code className="text-cyan-400 font-mono">doubao-seed-2-0-lite-260428</code>（免创建接入点，免充值200元）。如果需要使用自定义接入点，请输入您的接入点 ID（以 ep- 开头）。
                       </p>
                     </div>
                   ) : (
