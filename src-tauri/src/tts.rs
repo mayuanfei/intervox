@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use crate::asr::{AsrProviderId, BailianDeployment, TargetLanguageCode};
 use crate::credentials::{CredentialError, CredentialStore};
 use crate::translation::TranslationDocument;
@@ -21,6 +22,7 @@ pub struct TtsRequest {
     pub pitch: f32,
     pub sample_rate: u32,
     pub original_video_path: Option<String>,
+    pub app_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -68,6 +70,15 @@ pub fn synthesize(
     if request.translation.segments.is_empty() {
         return Err(TtsError::EmptyTranslation);
     }
+
+    let model_name = request.model.trim();
+
+    // Route to Volcengine Doubao if the model matches
+    if is_volc_model(model_name) {
+        return synthesize_volc(request, credentials);
+    }
+
+    // --- Existing Aliyun path (unchanged) ---
 
     let api_key = credentials
         .get(AsrProviderId::AliyunBailian)?
@@ -220,6 +231,100 @@ pub fn synthesize(
     })
 }
 
+fn synthesize_volc(
+    request: TtsRequest,
+    credentials: &CredentialStore,
+) -> Result<TtsDocument, TtsError> {
+    let api_key = credentials
+        .get(AsrProviderId::VolcDoubao)?
+        .ok_or(TtsError::MissingCredential)?;
+
+    let app_id = request.app_id.clone().unwrap_or_default();
+    if app_id.trim().is_empty() {
+        return Err(TtsError::Api("请先在设置中填入火山引擎 App ID。".to_string()));
+    }
+
+    let output_dir = resolve_output_dir(request.output_dir.as_deref())?;
+    fs::create_dir_all(&output_dir)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(120)).build()?;
+
+    let model_name = request.model.trim().to_string();
+    let is_clone = model_name.contains("icl") || model_name.contains("clone");
+
+    // Determine resource_id and voice_type
+    let resource_id = if is_clone {
+        "seed-icl-2.0"
+    } else {
+        "seed-tts-2.0"
+    };
+
+    let voice_type = if is_clone {
+        // Voice cloning path
+        let video_path = request.original_video_path.as_deref().ok_or_else(|| {
+            TtsError::Api("进行火山引擎声音克隆时必须提供原视频路径。".to_string())
+        })?;
+
+        let temp_slice = extract_slice_to_temp(video_path)
+            .map_err(|e| TtsError::Api(format!("提取克隆音源切片失败：{e}")))?;
+
+        let speaker_id = enroll_volc_voice(&client, &api_key, &app_id, &temp_slice);
+        let _ = std::fs::remove_file(&temp_slice);
+        speaker_id?
+    } else {
+        // Standard synthesis: use the voice preset or default
+        if request.voice.trim().is_empty() {
+            "zh_female_vv_uranus_bigtts".to_string()
+        } else {
+            request.voice.trim().to_string()
+        }
+    };
+
+    let mut segments = Vec::new();
+    for (index, segment) in request.translation.segments.iter().enumerate() {
+        let text = segment.translated_text.trim();
+        if text.is_empty() {
+            eprintln!("[TTS-Volc] 跳过空文本段 {} ({})", index, segment.id);
+            continue;
+        }
+
+        let audio_path =
+            output_dir.join(format!("{index:04}_{}.wav", sanitize_file_id(&segment.id)));
+
+        synthesize_volc_segment(
+            &client,
+            &api_key,
+            &app_id,
+            resource_id,
+            &voice_type,
+            text,
+            &audio_path,
+        )?;
+
+        segments.push(TtsSegment {
+            id: segment.id.clone(),
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            speaker_id: segment.speaker_id.clone(),
+            text: text.to_string(),
+            audio_url: String::new(),
+            audio_path: audio_path.to_string_lossy().to_string(),
+        });
+    }
+
+    if segments.is_empty() {
+        return Err(TtsError::EmptyTranslation);
+    }
+
+    Ok(TtsDocument {
+        target_language: request.translation.target_language,
+        provider: "volc_doubao".to_string(),
+        model: model_name,
+        voice: voice_type,
+        segments,
+    })
+}
+
 
 fn extract_slice_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, String> {
     let input_path = std::path::Path::new(input_video_path);
@@ -325,6 +430,49 @@ fn enroll_voice(
         .ok_or_else(|| TtsError::Api(format!("声音复刻创建失败，未返回 voice_id：{response_json}")))
 }
 
+fn enroll_volc_voice(
+    client: &Client,
+    api_key: &str,
+    app_id: &str,
+    audio_path: &std::path::Path,
+) -> Result<String, TtsError> {
+    let audio_bytes = fs::read(audio_path)?;
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio_bytes);
+    let ext = audio_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("mp3");
+    let speaker_id = format!("intervox_clone_{}", Uuid::new_v4());
+
+    let payload = json!({
+        "appid": app_id,
+        "speaker_id": speaker_id,
+        "audios": [{
+            "audio_bytes": audio_b64,
+            "audio_format": ext
+        }],
+        "source": 2,
+        "model_type": 4
+    });
+
+    let response = client
+        .post("https://openspeech.bytedance.com/api/v1/mega_tts/audio/upload")
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer;{api_key}"))
+        .header("Resource-Id", "volc_mega_tts_resource")
+        .json(&payload)
+        .send()?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let err_text = response.text().unwrap_or_default();
+        return Err(TtsError::Api(format!("火山引擎声音复刻上传失败 (HTTP {}): {}", status, err_text)));
+    }
+
+    let _resp_json = response.json::<Value>()?;
+    Ok(speaker_id)
+}
+
 fn synthesize_segment(
     client: &Client,
     tts_url: &str,
@@ -370,6 +518,79 @@ fn synthesize_segment(
         .ok_or_else(|| TtsError::Api(format!("未返回音频 URL：{response_json}")))
 }
 
+fn synthesize_volc_segment(
+    client: &Client,
+    api_key: &str,
+    app_id: &str,
+    resource_id: &str,
+    voice_type: &str,
+    text: &str,
+    output_path: &std::path::Path,
+) -> Result<(), TtsError> {
+    let reqid = Uuid::new_v4().to_string();
+    let payload = json!({
+        "app": { "appid": app_id },
+        "user": { "uid": "intervox_user" },
+        "audio": {
+            "voice_type": voice_type,
+            "encoding": "wav",
+            "sample_rate": 24000
+        },
+        "request": {
+            "reqid": reqid,
+            "text": text,
+            "text_type": "plain"
+        }
+    });
+
+    let response = client
+        .post("https://openspeech.bytedance.com/api/v3/tts/unidirectional")
+        .header("Content-Type", "application/json")
+        .header("X-Api-Key", api_key)
+        .header("X-Api-Resource-Id", resource_id)
+        .header("X-Api-Request-Id", Uuid::new_v4().to_string())
+        .json(&payload)
+        .send()?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let err_text = response.text().unwrap_or_default();
+        return Err(TtsError::Api(format!("火山引擎 TTS 合成失败 (HTTP {}): {}", status, err_text)));
+    }
+
+    // Parse NDJSON chunked response: each line may contain base64 audio data
+    let body = response.text().unwrap_or_default();
+    let mut audio_data: Vec<u8> = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(obj) = serde_json::from_str::<Value>(line) {
+            if let Some(data_str) = obj.get("data").and_then(Value::as_str) {
+                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data_str) {
+                    audio_data.extend_from_slice(&decoded);
+                }
+            }
+            // Also check nested audio.data path
+            if let Some(data_str) = obj.pointer("/audio/data").and_then(Value::as_str) {
+                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data_str) {
+                    audio_data.extend_from_slice(&decoded);
+                }
+            }
+        }
+    }
+
+    if audio_data.is_empty() {
+        // Fallback: the response itself may be raw binary audio
+        // Try to interpret the body bytes directly
+        return Err(TtsError::Api("火山引擎 TTS 未返回有效音频数据".to_string()));
+    }
+
+    fs::write(output_path, &audio_data)?;
+    Ok(())
+}
+
 fn resolve_output_dir(output_dir: Option<&str>) -> Result<PathBuf, std::io::Error> {
     if let Some(path) = output_dir.map(str::trim).filter(|path| !path.is_empty()) {
         return Ok(PathBuf::from(path));
@@ -412,6 +633,25 @@ fn extract_audio_url(response: &Value) -> Option<&str> {
                 .pointer("/output/results/0/url")
                 .and_then(Value::as_str)
         })
+}
+
+fn is_volc_model(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("doubao") || m.contains("seed-") || m.contains("bigtts") || m.contains("volc")
+}
+
+fn ensure_translation_has_text(translation: &crate::translation::TranslationDocument) -> Result<(), TtsError> {
+    let empty_ids: Vec<&str> = translation
+        .segments
+        .iter()
+        .filter(|s| s.translated_text.trim().is_empty())
+        .map(|s| s.id.as_str())
+        .collect();
+    if empty_ids.is_empty() {
+        return Ok(());
+    }
+    let preview = empty_ids.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+    Err(TtsError::Api(format!("以下段落翻译文本为空：{preview}")))
 }
 
 #[cfg(test)]

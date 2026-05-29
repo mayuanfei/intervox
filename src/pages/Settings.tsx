@@ -28,9 +28,18 @@ export function Settings() {
     outputDir,
     setOutputDir,
     showToast,
+    volcCredentialDraft,
+    setVolcCredentialDraft,
+    volcAppIdDraft,
+    setVolcAppIdDraft,
+    volcStatus,
+    saveVolcCredential,
+    validateVolcProvider,
+    isSavingVolcCredential,
   } = useIntervox();
 
   const [showKey, setShowKey] = React.useState(false);
+  const [showVolcKey, setShowVolcKey] = React.useState(false);
 
   const handleBrowseOutputDir = async () => {
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
@@ -288,31 +297,82 @@ export function Settings() {
               <span className="font-extrabold th-text tracking-wide text-xs">
                 VOLCENGINE_DOUBAO_API
               </span>
-              <span className="text-[11px] text-emerald-400 flex items-center gap-1">
-                <CheckCircle className="w-3.5 h-3.5" /> Active
-              </span>
+              {volcStatus?.ok ? (
+                <span className="text-[11px] text-emerald-400 flex items-center gap-1">
+                  <CheckCircle className="w-3.5 h-3.5" /> Active
+                </span>
+              ) : (
+                <span className="text-[11px] text-amber-500 flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 animate-bounce" /> Missing Key
+                </span>
+              )}
             </div>
 
             <div className="space-y-3">
+              <div className="space-y-2">
+                <label className="block th-text-muted text-[10px] font-bold uppercase">
+                  APP_ID
+                </label>
+                <input
+                  type="text"
+                  value={volcAppIdDraft}
+                  onChange={(e) => setVolcAppIdDraft(e.target.value)}
+                  placeholder="your-volcengine-app-id"
+                  className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 font-mono"
+                />
+              </div>
+
               <div className="space-y-2">
                 <label className="block th-text-muted text-[10px] font-bold uppercase">
                   AUTHORIZATION_BEARER
                 </label>
                 <div className="flex gap-2 relative">
                   <input
-                    type="password"
-                    value=".................................................."
-                    disabled
-                    className="flex-1 px-3 py-2 border th-border th-bg-input th-text-muted focus:outline-none cursor-not-allowed font-mono"
+                    type={showVolcKey ? "text" : "password"}
+                    value={volcCredentialDraft}
+                    onChange={(e) => setVolcCredentialDraft(e.target.value)}
+                    placeholder="your-volcengine-api-key"
+                    className="flex-1 px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 pr-10 font-mono"
                   />
-                  <button className="absolute right-2 top-2.5 th-text-muted hover:th-text">
-                    <RefreshCw className="w-4 h-4" />
+                  <button
+                    onClick={() => setShowVolcKey(!showVolcKey)}
+                    className="absolute right-2 top-2.5 th-text-muted hover:th-text"
+                  >
+                    {showVolcKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={saveVolcCredential}
+                  disabled={isSavingVolcCredential || !volcCredentialDraft.trim()}
+                  className="px-3 py-2 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 hover:bg-cyan-500 hover:text-black transition-all flex items-center gap-2 uppercase text-[11px] font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Save className="w-3.5 h-3.5" /> Save Bearer
+                </button>
+                <button
+                  onClick={validateVolcProvider}
+                  className="px-3 py-2 border th-border text-slate-300 hover:border-slate-500 transition-all flex items-center gap-2 uppercase text-[11px] font-bold"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Validate Endpoint
+                </button>
+              </div>
+
+              {volcStatus && (
+                <div
+                  className={`border p-2.5 text-xs rounded-sm ${
+                    volcStatus.ok
+                      ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-300"
+                      : "border-red-500/20 bg-red-500/5 text-red-300"
+                  }`}
+                >
+                  {volcStatus.message}
+                </div>
+              )}
             </div>
             <p className="text-[11px] th-text-muted mt-2">
-              Secondary inference engine used for translation validation and quick segment alignment verification.
+              Volcengine Doubao TTS & LLM. Supports Seed-TTS 2.0 speech synthesis and Seed-ICL 2.0 zero-shot voice cloning.
             </p>
           </div>
         </div>

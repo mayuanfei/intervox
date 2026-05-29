@@ -205,6 +205,7 @@ pub struct GoogleChirp3Config {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct VolcDoubaoConfig {
     pub resource_id: String,
+    pub app_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -317,6 +318,7 @@ pub fn default_asr_config() -> AsrConfig {
         },
         volc_doubao: VolcDoubaoConfig {
             resource_id: "volc.bigasr.auc_turbo".to_string(),
+            app_id: String::new(),
         },
         local_whisper: LocalWhisperConfig {
             model: WhisperModel::Small,

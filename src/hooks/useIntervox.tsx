@@ -119,6 +119,17 @@ interface IntervoxContextType {
   cachedTranscript: any;
   cachedTranslation: any;
   
+  // Volcengine Doubao Credential States
+  volcCredentialDraft: string;
+  setVolcCredentialDraft: (draft: string) => void;
+  volcAppIdDraft: string;
+  setVolcAppIdDraft: (draft: string) => void;
+  volcStatus: CredentialValidationResult | null;
+  setVolcStatus: React.Dispatch<React.SetStateAction<CredentialValidationResult | null>>;
+  isSavingVolcCredential: boolean;
+  saveVolcCredential: () => Promise<void>;
+  validateVolcProvider: () => Promise<void>;
+
   // Actions
   saveCredential: () => Promise<void>;
   validateProvider: () => Promise<void>;
@@ -177,6 +188,11 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [localMediaPath, setLocalMediaPath] = useState("");
   
   const [status, setStatus] = useState<CredentialValidationResult | null>(null);
+
+  const [volcCredentialDraft, setVolcCredentialDraft] = useState("");
+  const [volcAppIdDraft, setVolcAppIdDraft] = useState(config.volc_doubao.app_id || "");
+  const [volcStatus, setVolcStatus] = useState<CredentialValidationResult | null>(null);
+  const [isSavingVolcCredential, setIsSavingVolcCredential] = useState(false);
   
   const [transcriptionStatus, setTranscriptionStatus] = useState<string | null>(null);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
@@ -527,6 +543,48 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const saveVolcCredential = async () => {
+    setIsSavingVolcCredential(true);
+    setVolcStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_save_credential",
+        { provider: "volc_doubao", secret: volcCredentialDraft },
+        { ok: volcCredentialDraft.trim().length > 0, provider: "volc_doubao" as any, message: "开发预览：火山引擎凭据已保存。" }
+      );
+      setVolcStatus(result);
+      if (result.ok) {
+        setVolcCredentialDraft("");
+        // Also save app_id to config
+        setConfig((prev) => ({
+          ...prev,
+          volc_doubao: {
+            ...prev.volc_doubao,
+            app_id: volcAppIdDraft.trim(),
+          },
+        }));
+      }
+    } catch (e: any) {
+      setVolcStatus({ ok: false, provider: "volc_doubao" as any, message: e.message || "保存失败。" });
+    } finally {
+      setIsSavingVolcCredential(false);
+    }
+  };
+
+  const validateVolcProvider = async () => {
+    setVolcStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_validate_credentials",
+        { provider: "volc_doubao", config },
+        { ok: true, provider: "volc_doubao" as any, message: "火山引擎配置校验成功。" }
+      );
+      setVolcStatus(result);
+    } catch (e: any) {
+      setVolcStatus({ ok: false, provider: "volc_doubao" as any, message: e.message || "校验失败。" });
+    }
+  };
+
   const startTranscription = async (forceRemote = false) => {
     if (!activeMediaInput) {
       setTranscriptionError("请提供音视频源。");
@@ -688,6 +746,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             pitch: 1,
             sample_rate: 24000,
             original_video_path: synthesisMode === "clone" ? activeMediaInput : null,
+            app_id: config.volc_doubao.app_id || null,
           }
         },
         {
@@ -901,6 +960,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             pitch: 1,
             sample_rate: 24000,
             original_video_path: synthesisMode === "clone" ? mediaInput : null,
+            app_id: configToUse.volc_doubao.app_id || null,
           }
         },
         {
@@ -1086,6 +1146,15 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         cachedTranslation,
         saveCredential,
         validateProvider,
+        volcCredentialDraft,
+        setVolcCredentialDraft,
+        volcAppIdDraft,
+        setVolcAppIdDraft,
+        volcStatus,
+        setVolcStatus,
+        isSavingVolcCredential,
+        saveVolcCredential,
+        validateVolcProvider,
         startTranscription,
         startTranslation,
         startTts,

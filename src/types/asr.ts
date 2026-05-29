@@ -34,7 +34,8 @@ export interface AsrConfig {
     project_id: string;
   };
   volc_doubao: {
-    resource_id: "volc.bigasr.auc_turbo";
+    resource_id: string;
+    app_id: string;
   };
   local_whisper: {
     model: WhisperModel;

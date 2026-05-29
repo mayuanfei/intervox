@@ -79,9 +79,19 @@ where
         return Err(TranslationError::EmptyTranscript);
     }
 
-    let api_key = credentials
-        .get(AsrProviderId::AliyunBailian)?
-        .ok_or(TranslationError::MissingCredential)?;
+    let model_name = request.model.trim();
+    let is_doubao = model_name.to_lowercase().contains("doubao") || model_name.starts_with("ep-");
+
+    let api_key = if is_doubao {
+        credentials
+            .get(AsrProviderId::VolcDoubao)?
+            .ok_or(TranslationError::MissingCredential)?
+    } else {
+        credentials
+            .get(AsrProviderId::AliyunBailian)?
+            .ok_or(TranslationError::MissingCredential)?
+    };
+
     let client = Client::builder()
         .timeout(Duration::from_secs(TRANSLATION_TIMEOUT_SECS))
         .build()
@@ -140,10 +150,13 @@ where
         progress: 1.0,
     });
 
+    let model_name_lower = request.model.to_lowercase();
+    let is_doubao_model = model_name_lower.contains("doubao") || request.model.starts_with("ep-");
+
     Ok(TranslationDocument {
         source_language: format!("{:?}", request.transcript.source_language),
         target_language: request.transcript.target_language,
-        provider: "aliyun_qwen".to_string(),
+        provider: if is_doubao_model { "volc_doubao".to_string() } else { "aliyun_qwen".to_string() },
         segments,
     })
 }
@@ -180,8 +193,17 @@ fn request_translation_batch(
     api_key: &str,
     request: &TranslationRequest,
 ) -> Result<Value, TranslationError> {
+    let model_name = request.model.trim();
+    let is_doubao = model_name.to_lowercase().contains("doubao") || model_name.starts_with("ep-");
+    
+    let url = if is_doubao {
+        "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    } else {
+        request.deployment.compatible_chat_url()
+    };
+
     let payload = json!({
-        "model": if request.model.trim().is_empty() { "qwen-plus" } else { request.model.trim() },
+        "model": if model_name.is_empty() { "qwen-plus" } else { model_name },
         "messages": [
             {
                 "role": "system",
@@ -197,7 +219,7 @@ fn request_translation_batch(
     });
 
     let response = client
-        .post(request.deployment.compatible_chat_url())
+        .post(url)
         .bearer_auth(api_key)
         .json(&payload)
         .send()

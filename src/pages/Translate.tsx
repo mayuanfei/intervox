@@ -12,6 +12,10 @@ import {
   BAILIAN_MODEL_OPTIONS,
   BAILIAN_TRANSLATION_MODEL_OPTIONS,
   TARGET_LANGUAGE_OPTIONS,
+  DOUBAO_TRANSLATION_MODEL_OPTIONS,
+  DOUBAO_TTS_MODEL_OPTIONS,
+  DOUBAO_TTS_VOICE_OPTIONS,
+  BAILIAN_TTS_VOICE_OPTIONS,
 } from "../lib/asrOptions";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -210,7 +214,7 @@ export function Translate() {
                     onChange={(e) => {}}
                     className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
                   >
-                    {BAILIAN_TRANSLATION_MODEL_OPTIONS.map((opt) => (
+                    {(config.provider === "volc_doubao" ? DOUBAO_TRANSLATION_MODEL_OPTIONS : BAILIAN_TRANSLATION_MODEL_OPTIONS).map((opt) => (
                       <option key={opt.value} value={opt.value}>
                         {opt.label}
                       </option>
@@ -404,10 +408,11 @@ export function Translate() {
                   onChange={(e) => setTtsVoice(e.target.value)}
                   className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
                 >
-                  <option value="longxiaochun_v3">龙小淳 - 活力童声 (COSYVOICE)</option>
-                  <option value="longwanwan_v3">龙婉婉 - 温暖女声</option>
-                  <option value="longying_v3">龙颖 - 专业女声</option>
-                  <option value="longxiaoshu_v3">龙小书 - 亲切男声</option>
+                  {(config.provider === "volc_doubao" ? DOUBAO_TTS_VOICE_OPTIONS : BAILIAN_TTS_VOICE_OPTIONS).map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             )}

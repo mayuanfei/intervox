@@ -26,6 +26,7 @@ export const DEFAULT_ASR_CONFIG: AsrConfig = {
   },
   volc_doubao: {
     resource_id: "volc.bigasr.auc_turbo",
+    app_id: "",
   },
   local_whisper: {
     model: "small",
@@ -138,4 +139,26 @@ export const BAILIAN_TTS_VOICE_OPTIONS = [
   { value: "longying_v3", label: "龙颖 (专业女声)" },
   { value: "longxiaoshu_v3", label: "龙小书 (亲切男声)" },
   { value: "longxiaobiao_v3", label: "龙小表 (客服男声)" },
+];
+
+// Volcengine Doubao Translation Model Options
+export const DOUBAO_TRANSLATION_MODEL_OPTIONS = [
+  { value: "ep-20260528-doubao-pro", label: "Doubao-Pro (高质量推荐)" },
+  { value: "ep-20260528-doubao-lite", label: "Doubao-Lite (极速低成本)" },
+];
+
+// Volcengine Doubao TTS Model Options
+export const DOUBAO_TTS_MODEL_OPTIONS = [
+  { value: "seed-tts-2.0", label: "Seed-TTS 2.0 (超自然语音合成)" },
+  { value: "seed-icl-2.0", label: "Seed-ICL 2.0 (声音复刻克隆)" },
+];
+
+// Volcengine Doubao TTS Voice Presets
+export const DOUBAO_TTS_VOICE_OPTIONS = [
+  { value: "zh_female_vv_uranus_bigtts", label: "VV 活泼灵动女声 (Uranus)" },
+  { value: "zh_female_vv_jupiter_bigtts", label: "VV 甜美温柔女声 (Jupiter)" },
+  { value: "zh_male_yunzhou_uranus_bigtts", label: "云舟 清爽沉稳男声 (Uranus)" },
+  { value: "zh_male_xiaotian_uranus_bigtts", label: "小天 清爽磁性男声 (Uranus)" },
+  { value: "zh_female_popo_mars_bigtts", label: "泡泡 甜美女声 (Mars)" },
+  { value: "zh_female_tianmeitaozi_mars_bigtts", label: "甜美桃子 (Mars)" },
 ];
