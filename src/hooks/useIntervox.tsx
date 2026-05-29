@@ -132,6 +132,15 @@ interface IntervoxContextType {
   saveVolcCredential: () => Promise<void>;
   validateVolcProvider: () => Promise<void>;
 
+  // Volcano Ark Credential States
+  volcArkCredentialDraft: string;
+  setVolcArkCredentialDraft: (draft: string) => void;
+  volcArkStatus: CredentialValidationResult | null;
+  setVolcArkStatus: React.Dispatch<React.SetStateAction<CredentialValidationResult | null>>;
+  isSavingVolcArkCredential: boolean;
+  saveVolcArkCredential: () => Promise<void>;
+  validateVolcArkProvider: () => Promise<void>;
+
   // Actions
   saveCredential: () => Promise<void>;
   validateProvider: () => Promise<void>;
@@ -195,6 +204,11 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [volcAppIdDraft, setVolcAppIdDraft] = useState(config.volc_doubao.app_id || "");
   const [volcStatus, setVolcStatus] = useState<CredentialValidationResult | null>(null);
   const [isSavingVolcCredential, setIsSavingVolcCredential] = useState(false);
+
+  // Volcano Ark (LLM) credential states
+  const [volcArkCredentialDraft, setVolcArkCredentialDraft] = useState("");
+  const [volcArkStatus, setVolcArkStatus] = useState<CredentialValidationResult | null>(null);
+  const [isSavingVolcArkCredential, setIsSavingVolcArkCredential] = useState(false);
   
   const [transcriptionStatus, setTranscriptionStatus] = useState<string | null>(null);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
@@ -595,6 +609,40 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       setVolcStatus(result);
     } catch (e: any) {
       setVolcStatus({ ok: false, provider: "volc_doubao" as any, message: e.message || "校验失败。" });
+    }
+  };
+
+  const saveVolcArkCredential = async () => {
+    setIsSavingVolcArkCredential(true);
+    setVolcArkStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_save_credential",
+        { provider: "volc_ark", secret: volcArkCredentialDraft },
+        { ok: volcArkCredentialDraft.trim().length > 0, provider: "volc_ark" as any, message: "开发预览：火山方舟凭据已保存。" }
+      );
+      setVolcArkStatus(result);
+      if (result.ok) {
+        setVolcArkCredentialDraft("");
+      }
+    } catch (e: any) {
+      setVolcArkStatus({ ok: false, provider: "volc_ark" as any, message: e.message || "保存失败。" });
+    } finally {
+      setIsSavingVolcArkCredential(false);
+    }
+  };
+
+  const validateVolcArkProvider = async () => {
+    setVolcArkStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_validate_credentials",
+        { provider: "volc_ark", config },
+        { ok: true, provider: "volc_ark" as any, message: "火山方舟配置校验成功。" }
+      );
+      setVolcArkStatus(result);
+    } catch (e: any) {
+      setVolcArkStatus({ ok: false, provider: "volc_ark" as any, message: e.message || "校验失败。" });
     }
   };
 
@@ -1174,6 +1222,13 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         isSavingVolcCredential,
         saveVolcCredential,
         validateVolcProvider,
+        volcArkCredentialDraft,
+        setVolcArkCredentialDraft,
+        volcArkStatus,
+        setVolcArkStatus,
+        isSavingVolcArkCredential,
+        saveVolcArkCredential,
+        validateVolcArkProvider,
         startTranscription,
         startTranslation,
         startTts,

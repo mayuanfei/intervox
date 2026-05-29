@@ -2,6 +2,7 @@ export type AsrProviderId =
   | "aliyun_bailian"
   | "google_chirp3"
   | "volc_doubao"
+  | "volc_ark"
   | "local_whisper";
 
 export type TargetLanguageCode =

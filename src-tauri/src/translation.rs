@@ -84,7 +84,7 @@ where
 
     let api_key = if is_doubao {
         credentials
-            .get(AsrProviderId::VolcDoubao)?
+            .get(AsrProviderId::VolcArk)?
             .ok_or(TranslationError::MissingCredential)?
     } else {
         credentials

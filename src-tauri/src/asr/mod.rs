@@ -14,6 +14,7 @@ pub enum AsrProviderId {
     AliyunBailian,
     GoogleChirp3,
     VolcDoubao,
+    VolcArk,
     LocalWhisper,
 }
 
@@ -23,6 +24,7 @@ impl AsrProviderId {
             AsrProviderId::AliyunBailian => "aliyun_bailian",
             AsrProviderId::GoogleChirp3 => "google_chirp3",
             AsrProviderId::VolcDoubao => "volc_doubao",
+            AsrProviderId::VolcArk => "volc_ark",
             AsrProviderId::LocalWhisper => "local_whisper",
         }
     }
@@ -389,6 +391,7 @@ fn provider_for(provider: AsrProviderId) -> Box<dyn AsrProvider + Send + Sync> {
         AsrProviderId::AliyunBailian => Box::new(AliyunBailianProvider),
         AsrProviderId::GoogleChirp3 => Box::new(GoogleChirp3Provider),
         AsrProviderId::VolcDoubao => Box::new(VolcDoubaoProvider),
+        AsrProviderId::VolcArk => Box::new(VolcDoubaoProvider),
         AsrProviderId::LocalWhisper => Box::new(LocalWhisperProvider),
     }
 }
