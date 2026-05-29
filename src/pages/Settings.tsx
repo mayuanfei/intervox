@@ -323,8 +323,17 @@ export function Settings() {
                 </label>
                 <input
                   type="text"
-                  value={volcAppIdDraft}
-                  onChange={(e) => setVolcAppIdDraft(e.target.value)}
+                  value={config.volc_doubao.app_id || ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setConfig((prev) => ({
+                      ...prev,
+                      volc_doubao: {
+                        ...prev.volc_doubao,
+                        app_id: val,
+                      }
+                    }));
+                  }}
                   placeholder="your-volcengine-app-id"
                   className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 font-mono"
                 />

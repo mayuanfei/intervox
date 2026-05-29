@@ -192,7 +192,18 @@ function writeLocalJson(key: string, value: unknown) {
 
 export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [activePage, setActivePage] = useState("player");
-  const [config, setConfig] = useState<AsrConfig>(DEFAULT_ASR_CONFIG);
+  const [config, setConfig] = useState<AsrConfig>(() => {
+    try {
+      const saved = localStorage.getItem("intervox_config");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_ASR_CONFIG;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("intervox_config", JSON.stringify(config));
+  }, [config]);
+
   const [credentialDraft, setCredentialDraft] = useState("");
   const [mediaUrl, setMediaUrl] = useState("");
   const [mediaInputMode, setMediaInputMode] = useState<MediaInputMode>("public_url");
