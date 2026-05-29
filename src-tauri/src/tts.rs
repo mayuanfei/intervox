@@ -254,9 +254,9 @@ fn synthesize_volc(
 
     // Determine resource_id and voice_type
     let resource_id = if is_clone {
-        "seed-icl-2.0"
+        "volc.seedicl.default"
     } else {
-        "seed-tts-2.0"
+        "volc.seedtts.default"
     };
 
     let voice_type = if is_clone {
