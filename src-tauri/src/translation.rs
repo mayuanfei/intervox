@@ -188,6 +188,21 @@ fn ensure_translation_complete(document: &TranslationDocument) -> Result<(), Tra
     )))
 }
 
+fn clean_json_content(content: &str) -> &str {
+    let mut s = content.trim();
+    if s.starts_with("```") {
+        if s.starts_with("```json") {
+            s = &s[7..];
+        } else {
+            s = &s[3..];
+        }
+        if s.ends_with("```") {
+            s = &s[..s.len() - 3];
+        }
+    }
+    s.trim()
+}
+
 fn request_translation_batch(
     client: &Client,
     api_key: &str,
@@ -202,21 +217,26 @@ fn request_translation_batch(
         request.deployment.compatible_chat_url()
     };
 
-    let payload = json!({
+    let mut payload = json!({
         "model": if model_name.is_empty() { "qwen-plus" } else { model_name },
         "messages": [
             {
                 "role": "system",
-                "content": "你是专业视频本地化翻译。保持原意，翻译要自然口语化，适合配音朗读。只返回 JSON。"
+                "content": "你是专业视频本地化翻译。保持原意，翻译要自然口语化，适合配音朗读。请直接返回符合指定结构的 JSON，不要有任何 Markdown 标记或其它解释性文字。"
             },
             {
                 "role": "user",
                 "content": build_translation_prompt(&request)
             }
         ],
-        "response_format": { "type": "json_object" },
         "temperature": 0.2
     });
+
+    if !is_doubao {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("response_format".to_string(), json!({ "type": "json_object" }));
+        }
+    }
 
     let response = client
         .post(url)
@@ -245,8 +265,10 @@ fn request_translation_batch(
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
         .ok_or_else(|| TranslationError::Api(format!("未返回 message.content：{response}")))?;
-    let content_json: Value =
-        serde_json::from_str(content).map_err(|error| TranslationError::Api(error.to_string()))?;
+        
+    let cleaned = clean_json_content(content);
+    let content_json: Value = serde_json::from_str(cleaned)
+        .map_err(|error| TranslationError::Api(format!("JSON解析失败: {error}; 原始文本: {content}")))?;
 
     Ok(content_json)
 }
