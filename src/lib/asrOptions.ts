@@ -161,4 +161,7 @@ export const DOUBAO_TTS_VOICE_OPTIONS = [
   { value: "zh_male_xiaotian_uranus_bigtts", label: "小天 清爽磁性男声 (Uranus)" },
   { value: "zh_female_popo_mars_bigtts", label: "泡泡 甜美女声 (Mars)" },
   { value: "zh_female_tianmeitaozi_mars_bigtts", label: "甜美桃子 (Mars)" },
+  { value: "BV700_streaming", label: "灿灿 亲切自然女声 (标准级)" },
+  { value: "BV001_streaming", label: "标准新闻女声 (标准级)" },
+  { value: "BV002_streaming", label: "标准通用男声 (标准级)" },
 ];

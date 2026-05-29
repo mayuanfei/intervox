@@ -252,13 +252,6 @@ fn synthesize_volc(
     let model_name = request.model.trim().to_string();
     let is_clone = model_name.contains("icl") || model_name.contains("clone");
 
-    // Determine resource_id and voice_type
-    let resource_id = if is_clone {
-        "seed-icl-2.0"
-    } else {
-        "seed-tts-2.0"
-    };
-
     let voice_type = if is_clone {
         // Voice cloning path
         let video_path = request.original_video_path.as_deref().ok_or_else(|| {
@@ -278,6 +271,15 @@ fn synthesize_volc(
         } else {
             request.voice.trim().to_string()
         }
+    };
+
+    // Determine resource_id
+    let resource_id = if is_clone {
+        "seed-icl-2.0"
+    } else if voice_type.contains("bigtts") {
+        "seed-tts-2.0"
+    } else {
+        "volc.seedtts.default"
     };
 
     let mut segments = Vec::new();
