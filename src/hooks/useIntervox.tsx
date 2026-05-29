@@ -90,6 +90,8 @@ interface IntervoxContextType {
   showToast: (message: string, type?: "success" | "error" | "info") => void;
   ttsVoice: string;
   setTtsVoice: (voice: string) => void;
+  translationModel: string;
+  setTranslationModel: (model: string) => void;
   ttsRate: number;
   setTtsRate: (rate: number) => void;
   outputDir: string;
@@ -237,6 +239,17 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
   const [synthesisMode, setSynthesisMode] = useState<"default" | "clone">("default");
   const [ttsVoice, setTtsVoice] = useState("longxiaochun_v3");
+  const [translationModel, setTranslationModel] = useState("qwen-plus");
+
+  useEffect(() => {
+    if (config.provider === "volc_doubao") {
+      setTranslationModel("ep-20260528-doubao-pro");
+      setTtsVoice("zh_female_vv_uranus_bigtts");
+    } else {
+      setTranslationModel("qwen-plus");
+      setTtsVoice("longxiaochun_v3");
+    }
+  }, [config.provider]);
   const [ttsRate, setTtsRate] = useState(1);
   const [outputDir, setOutputDir] = useState("");
   const [replaceOriginalAudio, setReplaceOriginalAudio] = useState(false);
@@ -325,10 +338,10 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         asr_cache_key: activeAsrCacheKey,
         target_language: config.target_language,
         deployment: config.aliyun_bailian.deployment,
-        model: "qwen-plus",
+        model: translationModel,
       }),
     );
-  }, [activeAsrCacheKey, config.aliyun_bailian.deployment, config.target_language]);
+  }, [activeAsrCacheKey, config.aliyun_bailian.deployment, config.target_language, translationModel]);
 
   const [cachedTranscript, setCachedTranscript] = useState<any>(null);
   const [cachedTranslation, setCachedTranslation] = useState<any>(null);
@@ -677,7 +690,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         {
           request: {
             transcript: { ...transcript, target_language: config.target_language },
-            model: "qwen-plus",
+            model: translationModel,
             deployment: config.aliyun_bailian.deployment,
           }
         },
@@ -738,7 +751,9 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         {
           request: {
             translation,
-            model: synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash",
+            model: config.provider === "volc_doubao"
+              ? (synthesisMode === "clone" ? "seed-icl-2.0" : "seed-tts-2.0")
+              : (synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash"),
             voice: synthesisMode === "clone" ? "" : ttsVoice,
             deployment: config.aliyun_bailian.deployment,
             output_dir: outputDir.trim() || null,
@@ -911,7 +926,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
           {
             request: {
               transcript: { ...asrResult, target_language: configToUse.target_language },
-              model: "qwen-plus",
+              model: translationModel,
               deployment: configToUse.aliyun_bailian.deployment,
             }
           },
@@ -952,7 +967,9 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         {
           request: {
             translation: translateResult,
-            model: synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash",
+            model: configToUse.provider === "volc_doubao"
+              ? (synthesisMode === "clone" ? "seed-icl-2.0" : "seed-tts-2.0")
+              : (synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash"),
             voice: synthesisMode === "clone" ? "" : ttsVoice,
             deployment: configToUse.aliyun_bailian.deployment,
             output_dir: outputDir.trim() || null,
@@ -1122,6 +1139,8 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         showToast,
         ttsVoice,
         setTtsVoice,
+        translationModel,
+        setTranslationModel,
         ttsRate,
         setTtsRate,
         outputDir,

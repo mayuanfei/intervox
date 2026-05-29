@@ -16,6 +16,7 @@ import {
   DOUBAO_TTS_MODEL_OPTIONS,
   DOUBAO_TTS_VOICE_OPTIONS,
   BAILIAN_TTS_VOICE_OPTIONS,
+  ASR_PROVIDER_OPTIONS,
 } from "../lib/asrOptions";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -35,6 +36,8 @@ export function Translate() {
     setReplaceOriginalAudio,
     ttsVoice,
     setTtsVoice,
+    translationModel,
+    setTranslationModel,
     startFullPipeline,
     synthesisMode,
     setSynthesisMode,
@@ -207,11 +210,33 @@ export function Translate() {
               <div className="space-y-3">
                 <div className="space-y-1">
                   <label className="th-text-3 text-[10px] uppercase font-bold">
+                    ASR & LLM Engine Provider
+                  </label>
+                  <select
+                    value={config.provider}
+                    onChange={(e) =>
+                      setConfig((prev) => ({
+                        ...prev,
+                        provider: e.target.value as any,
+                      }))
+                    }
+                    className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
+                  >
+                    {ASR_PROVIDER_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="th-text-3 text-[10px] uppercase font-bold">
                     Translation Model
                   </label>
                   <select
-                    value="qwen-plus"
-                    onChange={(e) => {}}
+                    value={translationModel}
+                    onChange={(e) => setTranslationModel(e.target.value)}
                     className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
                   >
                     {(config.provider === "volc_doubao" ? DOUBAO_TRANSLATION_MODEL_OPTIONS : BAILIAN_TRANSLATION_MODEL_OPTIONS).map((opt) => (
@@ -222,30 +247,101 @@ export function Translate() {
                   </select>
                 </div>
 
-                <div className="space-y-1">
-                  <label className="th-text-3 text-[10px] uppercase font-bold">
-                    ASR Recognition Model
-                  </label>
-                  <select
-                    value={config.aliyun_bailian.model}
-                    onChange={(e) =>
-                      setConfig((prev) => ({
-                        ...prev,
-                        aliyun_bailian: {
-                          ...prev.aliyun_bailian,
-                          model: e.target.value as any,
-                        },
-                      }))
-                    }
-                    className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                  >
-                    {BAILIAN_MODEL_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {config.provider === "aliyun_bailian" && (
+                  <div className="space-y-1">
+                    <label className="th-text-3 text-[10px] uppercase font-bold">
+                      ASR Recognition Model
+                    </label>
+                    <select
+                      value={config.aliyun_bailian.model}
+                      onChange={(e) =>
+                        setConfig((prev) => ({
+                          ...prev,
+                          aliyun_bailian: {
+                            ...prev.aliyun_bailian,
+                            model: e.target.value as any,
+                          },
+                        }))
+                      }
+                      className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
+                    >
+                      {BAILIAN_MODEL_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {config.provider === "volc_doubao" && (
+                  <div className="space-y-1">
+                    <label className="th-text-3 text-[10px] uppercase font-bold">
+                      Doubao Resource ID
+                    </label>
+                    <input
+                      type="text"
+                      value={config.volc_doubao.resource_id}
+                      onChange={(e) =>
+                        setConfig((prev) => ({
+                          ...prev,
+                          volc_doubao: {
+                            ...prev.volc_doubao,
+                            resource_id: e.target.value,
+                          },
+                        }))
+                      }
+                      className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
+                    />
+                  </div>
+                )}
+
+                {config.provider === "local_whisper" && (
+                  <div className="space-y-1">
+                    <label className="th-text-3 text-[10px] uppercase font-bold">
+                      Whisper Model Size
+                    </label>
+                    <select
+                      value={config.local_whisper.model}
+                      onChange={(e) =>
+                        setConfig((prev) => ({
+                          ...prev,
+                          local_whisper: {
+                            ...prev.local_whisper,
+                            model: e.target.value as any,
+                          },
+                        }))
+                      }
+                      className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
+                    >
+                      <option value="small">Small (Speed)</option>
+                      <option value="medium">Medium (Accuracy)</option>
+                    </select>
+                  </div>
+                )}
+
+                {config.provider === "google_chirp3" && (
+                  <div className="space-y-1">
+                    <label className="th-text-3 text-[10px] uppercase font-bold">
+                      Google Cloud Project ID
+                    </label>
+                    <input
+                      type="text"
+                      value={config.google_chirp3.project_id}
+                      onChange={(e) =>
+                        setConfig((prev) => ({
+                          ...prev,
+                          google_chirp3: {
+                            ...prev.google_chirp3,
+                            project_id: e.target.value,
+                          },
+                        }))
+                      }
+                      placeholder="your-gcp-project-id"
+                      className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
+                    />
+                  </div>
+                )}
 
                 <div className="space-y-1">
                   <label className="th-text-3 text-[10px] uppercase font-bold">
@@ -344,7 +440,7 @@ export function Translate() {
               >
                 <div className="flex items-center justify-between">
                   <span className="font-bold th-text text-[13px] tracking-wide">
-                    Bailian Voice Model
+                    {config.provider === "volc_doubao" ? "Doubao Voice Model" : "Bailian Voice Model"}
                   </span>
                   <div
                     className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
@@ -355,13 +451,21 @@ export function Translate() {
                   />
                 </div>
                 <p className="text-[11px] th-text-muted leading-relaxed">
-                  Bailian Voice Library. Select from pre-trained professional models (CosyVoice, Sambert).
+                  {config.provider === "volc_doubao"
+                    ? "Doubao Voice Library. Select from pre-trained professional models (Seed-TTS)."
+                    : "Bailian Voice Library. Select from pre-trained professional models (CosyVoice, Sambert)."}
                 </p>
                 <ul className="text-[10px] th-text-2 font-semibold space-y-1 pt-1 font-mono uppercase tracking-wider">
-                  <li className={ttsVoice === "longxiaochun_v3" ? "text-cyan-400" : "th-text-3"}>
-                    • COSYVOICE-300M (DEFAULT)
-                  </li>
-                  <li className="th-text-3">• SAMBERT-HIGH-FIDELITY</li>
+                  {config.provider === "volc_doubao" ? (
+                    <li className="text-cyan-400">• SEED-TTS 2.0 (DEFAULT)</li>
+                  ) : (
+                    <>
+                      <li className={ttsVoice === "longxiaochun_v3" ? "text-cyan-400" : "th-text-3"}>
+                        • COSYVOICE-300M (DEFAULT)
+                      </li>
+                      <li className="th-text-3">• SAMBERT-HIGH-FIDELITY</li>
+                    </>
+                  )}
                 </ul>
               </div>
 
@@ -392,7 +496,9 @@ export function Translate() {
                   />
                 </div>
                 <p className="text-[11px] th-text-muted leading-relaxed">
-                  Extract and replicate original speaker's timbre, emotional tone, and ambient noise levels dynamically.
+                  {config.provider === "volc_doubao"
+                    ? "Extract and replicate original speaker's timbre using Seed-ICL 2.0 zero-shot voice cloning."
+                    : "Extract and replicate original speaker's timbre, emotional tone, and ambient noise levels dynamically."}
                 </p>
               </div>
             </div>
