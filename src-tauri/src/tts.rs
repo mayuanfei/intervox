@@ -279,7 +279,7 @@ fn synthesize_volc(
     } else if voice_type.contains("bigtts") {
         "seed-tts-2.0"
     } else {
-        "volc.seedtts.default"
+        "volc.tts.default"
     };
 
     let mut segments = Vec::new();
