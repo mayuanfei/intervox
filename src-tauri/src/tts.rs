@@ -582,9 +582,38 @@ fn synthesize_volc_segment(
     }
 
     if audio_data.is_empty() {
-        // Fallback: the response itself may be raw binary audio
-        // Try to interpret the body bytes directly
-        return Err(TtsError::Api("火山引擎 TTS 未返回有效音频数据".to_string()));
+        let mut server_errors = Vec::new();
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(obj) = serde_json::from_str::<Value>(line) {
+                if let Some(code) = obj.get("code").or_else(|| obj.get("error_code")) {
+                    if let Some(msg) = obj.get("message").or_else(|| obj.get("err_msg")).or_else(|| obj.get("error")) {
+                        server_errors.push(format!("错误码 {}: {}", code, msg));
+                    } else {
+                        server_errors.push(format!("错误码 {}", code));
+                    }
+                } else if let Some(msg) = obj.get("message").or_else(|| obj.get("err_msg")).or_else(|| obj.get("error")) {
+                    server_errors.push(msg.to_string());
+                }
+            }
+        }
+        
+        let err_detail = if !server_errors.is_empty() {
+            server_errors.join("; ")
+        } else {
+            let trimmed_body = body.trim();
+            if !trimmed_body.is_empty() {
+                let limit = trimmed_body.char_indices().map(|(i, _)| i).nth(200).unwrap_or(trimmed_body.len());
+                format!("原始响应：{}", &trimmed_body[..limit])
+            } else {
+                "响应为空".to_string()
+            }
+        };
+
+        return Err(TtsError::Api(format!("火山引擎 TTS 未返回有效音频数据。原因：{}", err_detail)));
     }
 
     fs::write(output_path, &audio_data)?;
