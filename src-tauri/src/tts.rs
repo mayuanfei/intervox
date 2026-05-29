@@ -55,7 +55,7 @@ pub enum TtsError {
     UnsupportedDeployment,
     #[error("百炼 TTS 请求失败：{0}")]
     Http(#[from] reqwest::Error),
-    #[error("百炼 TTS 返回异常：{0}")]
+    #[error("{0}")]
     Api(String),
     #[error("写入配音文件失败：{0}")]
     Io(#[from] std::io::Error),
