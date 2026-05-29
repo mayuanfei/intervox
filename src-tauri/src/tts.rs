@@ -275,9 +275,9 @@ fn synthesize_volc(
 
     // Determine resource_id
     let resource_id = if is_clone {
-        "volc.megatts.default"
+        "seed-icl-2.0"
     } else if voice_type.contains("bigtts") {
-        "volc.service_type.10029"
+        "seed-tts-2.0"
     } else {
         "volc.tts.default"
     };
