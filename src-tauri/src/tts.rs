@@ -276,8 +276,10 @@ fn synthesize_volc(
     // Determine resource_id
     let resource_id = if is_clone {
         "seed-icl-2.0"
-    } else {
+    } else if voice_type.contains("bigtts") {
         "seed-tts-2.0"
+    } else {
+        "volc.tts.default"
     };
 
     let mut segments = Vec::new();
