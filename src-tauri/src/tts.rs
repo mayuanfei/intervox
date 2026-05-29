@@ -640,6 +640,7 @@ fn is_volc_model(model: &str) -> bool {
     m.contains("doubao") || m.contains("seed-") || m.contains("bigtts") || m.contains("volc")
 }
 
+#[allow(dead_code)]
 fn ensure_translation_has_text(translation: &crate::translation::TranslationDocument) -> Result<(), TtsError> {
     let empty_ids: Vec<&str> = translation
         .segments
