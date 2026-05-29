@@ -49,11 +49,11 @@ pub struct TranslationProgress {
 pub enum TranslationError {
     #[error("没有可翻译的转写内容。")]
     EmptyTranscript,
-    #[error("请先保存阿里云百炼 API Key。")]
+    #[error("请先保存对应的 API Key。")]
     MissingCredential,
-    #[error("百炼翻译请求失败：{0}")]
+    #[error("翻译请求失败：{0}")]
     Http(String),
-    #[error("百炼翻译返回异常：{0}")]
+    #[error("翻译接口返回异常：{0}")]
     Api(String),
     #[error("凭据错误：{0}")]
     Credential(#[from] CredentialError),
