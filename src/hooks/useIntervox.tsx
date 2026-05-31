@@ -161,6 +161,7 @@ const IntervoxContext = createContext<IntervoxContextType | undefined>(undefined
 // Cache Helpers
 const ASR_CACHE_PREFIX = "intervox:asr:v2:";
 const TRANSLATION_CACHE_PREFIX = "intervox:translation:v2:";
+const TTS_CACHE_PREFIX = "intervox:tts:v1:";
 
 function hashString(value: string) {
   let hash = 5381;
@@ -952,6 +953,21 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       model: translationModel,
     });
     const translationCacheKey = hashString(translationSignature);
+    const ttsModel = configToUse.provider === "volc_doubao"
+      ? (synthesisMode === "clone" ? "seed-icl-2.0" : "seed-tts-2.0")
+      : (synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash");
+    const ttsSignature = JSON.stringify({
+      translation_cache_key: translationCacheKey,
+      provider: configToUse.provider,
+      synthesis_mode: synthesisMode,
+      model: ttsModel,
+      voice: synthesisMode === "clone" ? "" : ttsVoice,
+      rate: ttsRate,
+      sample_rate: 24000,
+      output_dir: outputDir.trim(),
+      app_id: configToUse.volc_doubao.app_id,
+    });
+    const ttsCacheKey = hashString(ttsSignature);
 
     try {
       // Step 1: Extract Audio
@@ -1082,40 +1098,57 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       await new Promise((r) => setTimeout(r, 800));
 
       // Step 4: TTS / Voice Cloning
-      const ttsResult = await invokeOrFallback<TtsDocument>(
-        "synthesize_tts",
-        {
-          request: {
-            translation: translateResult,
-            model: configToUse.provider === "volc_doubao"
-              ? (synthesisMode === "clone" ? "seed-icl-2.0" : "seed-tts-2.0")
-              : (synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash"),
-            voice: synthesisMode === "clone" ? "" : ttsVoice,
-            deployment: configToUse.aliyun_bailian.deployment,
-            output_dir: outputDir.trim() || null,
-            rate: ttsRate,
-            pitch: 1,
-            sample_rate: 24000,
-            original_video_path: synthesisMode === "clone" ? mediaInput : null,
-            app_id: configToUse.volc_doubao.app_id || null,
+      let ttsResult: TtsDocument;
+      const cachedTts = readLocalJson<any>(`${TTS_CACHE_PREFIX}${ttsCacheKey}`);
+      const hasValidTtsCache = cachedTts?.document
+        ? await invokeOrFallback<boolean>("validate_tts_cache", { tts: cachedTts.document }, false)
+        : false;
+
+      if (hasValidTtsCache) {
+        ttsResult = cachedTts.document;
+        updateActiveTaskStage("tts_clone", 1.0, "检测到本地配音缓存，已直接载入（跳过重复 TTS 合成）。");
+        await new Promise((r) => setTimeout(r, 600));
+      } else {
+        ttsResult = await invokeOrFallback<TtsDocument>(
+          "synthesize_tts",
+          {
+            request: {
+              translation: translateResult,
+              model: ttsModel,
+              voice: synthesisMode === "clone" ? "" : ttsVoice,
+              deployment: configToUse.aliyun_bailian.deployment,
+              output_dir: outputDir.trim() || null,
+              rate: ttsRate,
+              pitch: 1,
+              sample_rate: 24000,
+              original_video_path: synthesisMode === "clone" ? mediaInput : null,
+              app_id: configToUse.volc_doubao.app_id || null,
+            }
+          },
+          {
+            target_language: translateResult.target_language,
+            provider: "aliyun_cosyvoice",
+            model: "cosyvoice-v3-flash",
+            voice: ttsVoice,
+            segments: translateResult.segments.map((segment, index) => ({
+              id: segment.id,
+              start_ms: segment.start_ms,
+              end_ms: segment.end_ms,
+              speaker_id: segment.speaker_id,
+              text: segment.translated_text,
+              audio_url: "mock_url",
+              audio_path: `mock_tts_file_${index}.wav`,
+            }))
           }
-        },
-        {
-          target_language: translateResult.target_language,
-          provider: "aliyun_cosyvoice",
-          model: "cosyvoice-v3-flash",
-          voice: ttsVoice,
-          segments: translateResult.segments.map((segment, index) => ({
-            id: segment.id,
-            start_ms: segment.start_ms,
-            end_ms: segment.end_ms,
-            speaker_id: segment.speaker_id,
-            text: segment.translated_text,
-            audio_url: "mock_url",
-            audio_path: `mock_tts_file_${index}.wav`,
-          }))
-        }
-      );
+        );
+        writeLocalJson(`${TTS_CACHE_PREFIX}${ttsCacheKey}`, {
+          version: 1,
+          cache_key: ttsCacheKey,
+          translation_cache_key: translationCacheKey,
+          updated_at: new Date().toISOString(),
+          document: ttsResult,
+        });
+      }
 
       setTts(ttsResult);
       updateActiveTaskStage("mix_media", 0.5, "声轨合成结束。开始 FFmpeg 轨道混合生成输出视频。");
@@ -1204,7 +1237,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             stage: "select_video" as const,
             progress: 0,
             error: null,
-            logLines: [`[${new Date().toLocaleTimeString()}] 🔄 重试任务，重新启动完整 Pipeline...`],
+            logLines: [`[${new Date().toLocaleTimeString()}] 重试任务，正在检查缓存并恢复 Pipeline...`],
           };
         }
         return t;

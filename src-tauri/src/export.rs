@@ -14,6 +14,7 @@ const MAX_TEMPO: f32 = 3.0;
 const MAX_ENGLISH_SUBTITLE_WIDTH: usize = 36;
 const MAX_TARGET_SUBTITLE_WIDTH: usize = 28;
 const PLAYBACK_CACHE_VERSION: &str = "v3-h264-preview-no-upscale";
+const MAX_VOICEOVER_INPUTS_PER_COMMAND: usize = 100;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ExportRequest {
@@ -330,6 +331,11 @@ pub fn ffmpeg_path() -> PathBuf {
     }
 
     #[cfg(target_os = "windows")]
+    if let Some(path) = local_ffmpeg_path() {
+        return path;
+    }
+
+    #[cfg(target_os = "windows")]
     if let Some(path) = winget_ffmpeg_path() {
         return path;
     }
@@ -343,6 +349,34 @@ pub fn ffmpeg_path() -> PathBuf {
     .map(PathBuf::from)
     .find(|path| path.is_file())
     .unwrap_or_else(|| PathBuf::from("ffmpeg"))
+}
+
+#[cfg(target_os = "windows")]
+fn local_ffmpeg_path() -> Option<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        roots.push(current_dir);
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+
+    for root in roots {
+        for ancestor in root.ancestors() {
+            let candidate = ancestor
+                .join("tools")
+                .join("ffmpeg")
+                .join("bin")
+                .join("ffmpeg.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(target_os = "windows")]
@@ -379,13 +413,45 @@ fn build_voiceover(
 ) -> Result<(), ExportError> {
     let filter_path = output_dir.join("voiceover.filter.txt");
     let timeline_path = output_dir.join("voiceover.timeline.tsv");
-    fs::write(&filter_path, build_voiceover_filter(tts)?)?;
     fs::write(&timeline_path, build_voiceover_timeline(tts)?)?;
 
+    if tts.segments.len() <= MAX_VOICEOVER_INPUTS_PER_COMMAND {
+        fs::write(&filter_path, build_voiceover_filter(tts)?)?;
+        return mix_voiceover_segments(&tts.segments, 0, &filter_path, voiceover_path);
+    }
+
+    let mut batch_outputs = Vec::new();
+    for (batch_index, segments) in tts
+        .segments
+        .chunks(MAX_VOICEOVER_INPUTS_PER_COMMAND)
+        .enumerate()
+    {
+        let batch_start_ms = segments
+            .iter()
+            .map(|segment| segment.start_ms)
+            .min()
+            .unwrap_or(0);
+        let batch_filter_path =
+            output_dir.join(format!("voiceover.batch.{batch_index:03}.filter.txt"));
+        let batch_output_path = output_dir.join(format!("voiceover.batch.{batch_index:03}.wav"));
+        fs::write(
+            &batch_filter_path,
+            build_voiceover_filter_for_segments(segments, batch_start_ms)?,
+        )?;
+        mix_voiceover_segments(
+            segments,
+            batch_start_ms,
+            &batch_filter_path,
+            &batch_output_path,
+        )?;
+        batch_outputs.push((batch_start_ms, batch_output_path));
+    }
+
+    fs::write(&filter_path, build_voiceover_batch_filter(&batch_outputs))?;
     let mut command = ffmpeg_command();
     command.arg("-y");
-    for segment in &tts.segments {
-        command.arg("-i").arg(&segment.audio_path);
+    for (_, batch_output_path) in &batch_outputs {
+        command.arg("-i").arg(batch_output_path);
     }
     command
         .arg("-filter_complex_script")
@@ -399,28 +465,90 @@ fn build_voiceover(
         .arg("-c:a")
         .arg("pcm_s16le")
         .arg(voiceover_path);
-    run_command(&mut command)
+    let result = run_command(&mut command);
+    if result.is_ok() {
+        for (_, batch_output_path) in batch_outputs {
+            let _ = fs::remove_file(batch_output_path);
+        }
+    }
+    result
 }
 
 fn build_voiceover_filter(tts: &TtsDocument) -> Result<String, ExportError> {
-    let mut filters = Vec::with_capacity(tts.segments.len() + 1);
-    for (index, segment) in tts.segments.iter().enumerate() {
+    build_voiceover_filter_for_segments(&tts.segments, 0)
+}
+
+fn build_voiceover_filter_for_segments(
+    segments: &[crate::tts::TtsSegment],
+    offset_ms: u64,
+) -> Result<String, ExportError> {
+    let mut filters = Vec::with_capacity(segments.len() + 1);
+    for (index, segment) in segments.iter().enumerate() {
         let tempo = segment_tempo(
             segment.start_ms,
             segment.end_ms,
             Path::new(&segment.audio_path),
         )?;
-        filters.push(segment_filter(index, segment.start_ms, tempo));
+        filters.push(segment_filter(
+            index,
+            segment.start_ms.saturating_sub(offset_ms),
+            tempo,
+        ));
     }
 
-    let inputs = (0..tts.segments.len())
+    let inputs = (0..segments.len())
         .map(|index| format!("[a{index}]"))
         .collect::<String>();
     filters.push(format!(
         "{inputs}amix=inputs={}:duration=longest:normalize=0[aout]",
-        tts.segments.len()
+        segments.len()
     ));
     Ok(filters.join(";"))
+}
+
+fn mix_voiceover_segments(
+    segments: &[crate::tts::TtsSegment],
+    offset_ms: u64,
+    filter_path: &Path,
+    output_path: &Path,
+) -> Result<(), ExportError> {
+    let mut command = ffmpeg_command();
+    command.arg("-y");
+    for segment in segments {
+        command.arg("-i").arg(&segment.audio_path);
+    }
+    command
+        .arg("-filter_complex_script")
+        .arg(filter_path)
+        .arg("-map")
+        .arg("[aout]")
+        .arg("-ar")
+        .arg("24000")
+        .arg("-ac")
+        .arg("1")
+        .arg("-c:a")
+        .arg("pcm_s16le")
+        .arg(output_path);
+    let result = run_command(&mut command);
+    if result.is_err() {
+        eprintln!("[voiceover] 批次混音失败，时间偏移：{offset_ms}ms");
+    }
+    result
+}
+
+fn build_voiceover_batch_filter(batch_outputs: &[(u64, PathBuf)]) -> String {
+    let mut filters = Vec::with_capacity(batch_outputs.len() + 1);
+    for (index, (start_ms, _)) in batch_outputs.iter().enumerate() {
+        filters.push(format!("[{index}:a]adelay={start_ms}:all=1[a{index}]"));
+    }
+    let inputs = (0..batch_outputs.len())
+        .map(|index| format!("[a{index}]"))
+        .collect::<String>();
+    filters.push(format!(
+        "{inputs}amix=inputs={}:duration=longest:normalize=0[aout]",
+        batch_outputs.len()
+    ));
+    filters.join(";")
 }
 
 fn build_voiceover_timeline(tts: &TtsDocument) -> Result<String, ExportError> {
@@ -618,7 +746,9 @@ fn clamp_volume(value: f32) -> f32 {
 }
 
 fn run_command(command: &mut Command) -> Result<(), ExportError> {
-    let output = command.output().map_err(|_| ExportError::MissingFfmpeg)?;
+    let output = command
+        .output()
+        .map_err(|error| ExportError::CommandFailed(format!("无法启动 ffmpeg：{error}")))?;
     if output.status.success() {
         return Ok(());
     }
@@ -919,6 +1049,20 @@ mod tests {
 
         assert!(filter.contains("[0:a]adelay=100:all=1[a0]"));
         assert!(filter.contains("[1:a]adelay=900:all=1[a1]"));
+        assert!(filter.contains("[a0][a1]amix=inputs=2:duration=longest:normalize=0[aout]"));
+    }
+
+    #[test]
+    fn batch_voiceover_filter_delays_each_batch_to_original_start_time() {
+        let batch_outputs = vec![
+            (0, PathBuf::from("batch-0.wav")),
+            (12_345, PathBuf::from("batch-1.wav")),
+        ];
+
+        let filter = build_voiceover_batch_filter(&batch_outputs);
+
+        assert!(filter.contains("[0:a]adelay=0:all=1[a0]"));
+        assert!(filter.contains("[1:a]adelay=12345:all=1[a1]"));
         assert!(filter.contains("[a0][a1]amix=inputs=2:duration=longest:normalize=0[aout]"));
     }
 

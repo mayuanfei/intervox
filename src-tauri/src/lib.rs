@@ -238,6 +238,15 @@ async fn synthesize_tts(app: tauri::AppHandle, request: TtsRequest) -> Result<Tt
 }
 
 #[tauri::command]
+fn validate_tts_cache(tts: TtsDocument) -> bool {
+    !tts.segments.is_empty()
+        && tts.segments.iter().all(|segment| {
+            !segment.audio_path.trim().is_empty()
+                && std::path::Path::new(&segment.audio_path).is_file()
+        })
+}
+
+#[tauri::command]
 async fn export_dubbed_video(request: ExportRequest) -> Result<ExportResult, String> {
     eprintln!("[export_dubbed_video] 开始");
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -372,6 +381,7 @@ pub fn run() {
             asr_cancel,
             translate_transcript,
             synthesize_tts,
+            validate_tts_cache,
             export_dubbed_video,
             prepare_video_for_playback,
             select_local_file,

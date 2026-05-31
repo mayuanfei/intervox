@@ -5,7 +5,9 @@ use base64::Engine as _;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
@@ -118,7 +120,7 @@ where
         .deployment
         .cosyvoice_tts_url()
         .ok_or(TtsError::UnsupportedDeployment)?;
-    let output_dir = resolve_output_dir(request.output_dir.as_deref())?;
+    let output_dir = resolve_output_dir(request.output_dir.as_deref(), &tts_cache_key(&request))?;
     fs::create_dir_all(&output_dir)?;
 
     let client = Client::builder().timeout(Duration::from_secs(90)).build()?;
@@ -175,61 +177,67 @@ where
             continue;
         }
 
-        let audio_url = synthesize_segment(
-            &client,
-            tts_url,
-            &api_key,
-            &model,
-            &voice,
-            request.rate,
-            request.pitch,
-            request.sample_rate,
-            text,
-        )?;
         let audio_path =
             output_dir.join(format!("{index:04}_{}.wav", sanitize_file_id(&segment.id)));
-
-        // Robust download with HTTP -> HTTPS replacement and retries
-        let download_url = if audio_url.starts_with("http://") {
-            audio_url.replacen("http://", "https://", 1)
+        let audio_url = if has_reusable_audio_file(&audio_path) {
+            eprintln!("[TTS] 复用已生成音频段 {} ({})", index, segment.id);
+            String::new()
         } else {
-            audio_url.clone()
-        };
+            let audio_url = synthesize_segment(
+                &client,
+                tts_url,
+                &api_key,
+                &model,
+                &voice,
+                request.rate,
+                request.pitch,
+                request.sample_rate,
+                text,
+            )?;
 
-        let mut audio_bytes = None;
-        let mut last_err = None;
-        for attempt in 1..=5 {
-            match client.get(&download_url).send() {
-                Ok(resp) => match resp.error_for_status() {
-                    Ok(success_resp) => match success_resp.bytes() {
-                        Ok(bytes) => {
-                            audio_bytes = Some(bytes);
-                            break;
+            // Robust download with HTTP -> HTTPS replacement and retries
+            let download_url = if audio_url.starts_with("http://") {
+                audio_url.replacen("http://", "https://", 1)
+            } else {
+                audio_url.clone()
+            };
+
+            let mut audio_bytes = None;
+            let mut last_err = None;
+            for attempt in 1..=5 {
+                match client.get(&download_url).send() {
+                    Ok(resp) => match resp.error_for_status() {
+                        Ok(success_resp) => match success_resp.bytes() {
+                            Ok(bytes) => {
+                                audio_bytes = Some(bytes);
+                                break;
+                            }
+                            Err(e) => last_err = Some(TtsError::Http(e)),
+                        },
+                        Err(e) => {
+                            last_err = Some(TtsError::Http(e));
                         }
-                        Err(e) => last_err = Some(TtsError::Http(e)),
                     },
                     Err(e) => {
                         last_err = Some(TtsError::Http(e));
                     }
-                },
-                Err(e) => {
-                    last_err = Some(TtsError::Http(e));
                 }
+                eprintln!("[TTS] 下载音频文件第 {} 次尝试失败，正在重试...", attempt);
+                std::thread::sleep(Duration::from_millis(1000 * attempt));
             }
-            eprintln!("[TTS] 下载音频文件第 {} 次尝试失败，正在重试...", attempt);
-            std::thread::sleep(Duration::from_millis(1000 * attempt));
-        }
 
-        let audio_bytes = match audio_bytes {
-            Some(bytes) => bytes,
-            None => {
-                let err = last_err
-                    .unwrap_or_else(|| TtsError::Api("下载音频失败，重试次数超限".to_string()));
-                return Err(err);
-            }
+            let audio_bytes = match audio_bytes {
+                Some(bytes) => bytes,
+                None => {
+                    let err = last_err
+                        .unwrap_or_else(|| TtsError::Api("下载音频失败，重试次数超限".to_string()));
+                    return Err(err);
+                }
+            };
+
+            fs::write(&audio_path, audio_bytes.as_ref())?;
+            audio_url
         };
-
-        fs::write(&audio_path, audio_bytes.as_ref())?;
 
         segments.push(TtsSegment {
             id: segment.id.clone(),
@@ -288,7 +296,7 @@ where
         ));
     }
 
-    let output_dir = resolve_output_dir(request.output_dir.as_deref())?;
+    let output_dir = resolve_output_dir(request.output_dir.as_deref(), &tts_cache_key(&request))?;
     fs::create_dir_all(&output_dir)?;
 
     let client = Client::builder()
@@ -338,15 +346,19 @@ where
         let audio_path =
             output_dir.join(format!("{index:04}_{}.wav", sanitize_file_id(&segment.id)));
 
-        synthesize_volc_segment(
-            &client,
-            &api_key,
-            &app_id,
-            &resource_id,
-            &voice_type,
-            text,
-            &audio_path,
-        )?;
+        if has_reusable_audio_file(&audio_path) {
+            eprintln!("[TTS-Volc] 复用已生成音频段 {} ({})", index, segment.id);
+        } else {
+            synthesize_volc_segment(
+                &client,
+                &api_key,
+                &app_id,
+                &resource_id,
+                &voice_type,
+                text,
+                &audio_path,
+            )?;
+        }
 
         segments.push(TtsSegment {
             id: segment.id.clone(),
@@ -649,27 +661,68 @@ fn synthesize_segment(
         }
     });
 
+    let mut last_error = None;
+    for attempt in 1..=3 {
+        match request_bailian_audio_url(client, tts_url, api_key, &payload) {
+            Ok(audio_url) => return Ok(audio_url),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 3 {
+                    eprintln!("[TTS] 百炼语音合成第 {attempt} 次尝试失败，正在重试...");
+                    std::thread::sleep(Duration::from_millis(1000 * attempt));
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| TtsError::Api("百炼语音合成失败。".to_string())))
+}
+
+fn request_bailian_audio_url(
+    client: &Client,
+    tts_url: &str,
+    api_key: &str,
+    payload: &Value,
+) -> Result<String, TtsError> {
     let response = client
         .post(tts_url)
         .bearer_auth(api_key)
         .header("Content-Type", "application/json")
-        .json(&payload)
+        .json(payload)
         .send()?;
+    let status = response.status();
+    let response_text = response.text().map_err(|error| {
+        TtsError::Api(format!("百炼 TTS 响应读取失败 (HTTP {status})：{error}"))
+    })?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let err_text = response.text().unwrap_or_default();
+    if !status.is_success() {
         return Err(TtsError::Api(format!(
             "百炼语音合成失败 (HTTP {}): {}",
-            status, err_text
+            status,
+            summarize_response(&response_text)
         )));
     }
 
-    let response_json = response.json::<Value>()?;
+    let response_json = serde_json::from_str::<Value>(&response_text).map_err(|error| {
+        TtsError::Api(format!(
+            "百炼 TTS 响应解析失败 (HTTP {status})：{error}；响应摘要：{}",
+            summarize_response(&response_text)
+        ))
+    })?;
 
     extract_audio_url(&response_json)
         .map(ToString::to_string)
         .ok_or_else(|| TtsError::Api(format!("未返回音频 URL：{response_json}")))
+}
+
+fn summarize_response(response: &str) -> String {
+    let trimmed = response.trim();
+    let end = trimmed
+        .char_indices()
+        .map(|(index, _)| index)
+        .nth(300)
+        .unwrap_or(trimmed.len());
+    trimmed[..end].to_string()
 }
 
 fn synthesize_volc_segment(
@@ -834,17 +887,37 @@ fn volc_stream_error_detail(stream_objects: &[Value], body: &str) -> String {
     }
 }
 
-fn resolve_output_dir(output_dir: Option<&str>) -> Result<PathBuf, std::io::Error> {
-    if let Some(path) = output_dir.map(str::trim).filter(|path| !path.is_empty()) {
-        return Ok(PathBuf::from(path));
-    }
+fn resolve_output_dir(
+    output_dir: Option<&str>,
+    cache_key: &str,
+) -> Result<PathBuf, std::io::Error> {
+    let mut base_dir = if let Some(path) = output_dir.map(str::trim).filter(|path| !path.is_empty())
+    {
+        PathBuf::from(path)
+    } else {
+        let mut dir = std::env::current_dir()?;
+        if dir.ends_with("src-tauri") {
+            dir.pop();
+        }
+        dir.join("exports")
+    };
 
-    let mut dir = std::env::current_dir()?;
-    if dir.ends_with("src-tauri") {
-        dir.pop();
-    }
+    base_dir.push(format!("tts_{cache_key}"));
+    Ok(base_dir)
+}
 
-    Ok(dir.join("exports").join(format!("tts_{}", Uuid::new_v4())))
+fn tts_cache_key(request: &TtsRequest) -> String {
+    let mut hasher = DefaultHasher::new();
+    serde_json::to_string(request)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+fn has_reusable_audio_file(path: &std::path::Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.len() > 44)
+        .unwrap_or(false)
 }
 
 fn sanitize_file_id(id: &str) -> String {
