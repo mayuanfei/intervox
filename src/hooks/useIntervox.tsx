@@ -205,7 +205,13 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [config, setConfig] = useState<AsrConfig>(() => {
     try {
       const saved = localStorage.getItem("intervox_config");
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved) as AsrConfig;
+        if (parsed.volc_doubao?.resource_id === "volc.seedasr.auc") {
+          parsed.volc_doubao.resource_id = "volc.bigasr.auc_turbo";
+        }
+        return parsed;
+      }
     } catch {}
     return DEFAULT_ASR_CONFIG;
   });

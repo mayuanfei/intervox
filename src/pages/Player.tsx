@@ -341,7 +341,7 @@ export function Player() {
         type="file"
         ref={fileInputRef}
         onChange={handleFileInputChange}
-        accept="video/*,audio/*"
+        accept="video/*,audio/*,.rm,.rmvb"
         className="hidden"
       />
 

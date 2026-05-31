@@ -25,7 +25,7 @@ export const DEFAULT_ASR_CONFIG: AsrConfig = {
     project_id: "",
   },
   volc_doubao: {
-    resource_id: "volc.seedasr.auc",
+    resource_id: "volc.bigasr.auc_turbo",
     app_id: "",
   },
   local_whisper: {

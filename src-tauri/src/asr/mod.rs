@@ -9,6 +9,9 @@ use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
+const BAILIAN_LOCAL_CHUNK_SECONDS: u64 = 9_000;
+const VOLC_LOCAL_CHUNK_SECONDS: u64 = 1_800;
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AsrProviderId {
@@ -341,7 +344,7 @@ pub fn default_asr_config() -> AsrConfig {
             project_id: String::new(),
         },
         volc_doubao: VolcDoubaoConfig {
-            resource_id: "volc.seedasr.auc".to_string(),
+            resource_id: "volc.bigasr.auc_turbo".to_string(),
             app_id: String::new(),
         },
         local_whisper: LocalWhisperConfig {
@@ -444,42 +447,84 @@ impl AsrProvider for AliyunBailianProvider {
         let is_public_url =
             request.audio_path.starts_with("http://") || request.audio_path.starts_with("https://");
 
-        let file_url = if is_public_url {
-            validate_public_media_url(&request.audio_path)?.to_string()
+        if is_public_url {
+            let file_url = validate_public_media_url(&request.audio_path)?.to_string();
+            transcribe_bailian_file_url(&client, &api_key, request, self.id(), &file_url)
         } else {
-            let temp_audio_path = extract_audio_to_temp(&request.audio_path)
-                .map_err(|e| AsrError::LocalProcessing(e))?;
-
-            let upload_result = (|| -> Result<String, AsrError> {
+            let temp_audio_paths =
+                extract_audio_chunks_to_temp(&request.audio_path, BAILIAN_LOCAL_CHUNK_SECONDS)
+                    .map_err(|e| AsrError::LocalProcessing(e))?;
+            let transcription_result = (|| -> Result<TranscriptDocument, AsrError> {
                 let policy = get_dashscope_upload_policy(
                     &client,
                     &api_key,
                     request.config.aliyun_bailian.model.as_model_name(),
                 )?;
 
-                upload_file_to_dashscope_oss(&client, &policy, &temp_audio_path)
+                let mut document = TranscriptDocument {
+                    source_language: request.config.source_language.clone(),
+                    target_language: request.config.target_language.clone(),
+                    provider: self.id(),
+                    segments: Vec::new(),
+                };
+                let mut chunk_offset_ms = 0;
+
+                for (chunk_index, temp_audio_path) in temp_audio_paths.iter().enumerate() {
+                    let file_url = upload_file_to_dashscope_oss(&client, &policy, temp_audio_path)?;
+                    let mut chunk_document = transcribe_bailian_file_url(
+                        &client,
+                        &api_key,
+                        request,
+                        self.id(),
+                        &file_url,
+                    )?;
+
+                    if document.source_language == SourceLanguageCode::Auto
+                        && chunk_document.source_language != SourceLanguageCode::Auto
+                    {
+                        document.source_language = chunk_document.source_language.clone();
+                    }
+                    for segment in &mut chunk_document.segments {
+                        segment.id = format!("chunk_{chunk_index}_{}", segment.id);
+                        segment.start_ms += chunk_offset_ms;
+                        segment.end_ms += chunk_offset_ms;
+                    }
+                    document.segments.extend(chunk_document.segments);
+                    chunk_offset_ms += audio_duration_ms(temp_audio_path)?;
+                }
+
+                Ok(document)
             })();
 
-            let _ = std::fs::remove_file(&temp_audio_path);
-
-            upload_result?
-        };
-
-        let task_id = submit_bailian_qwen_task(&client, &api_key, request, &file_url)?;
-        let transcription_url = poll_bailian_task(&client, &api_key, request, &task_id)?;
-        let result_json = client
-            .get(transcription_url)
-            .header("X-DashScope-OssResourceResolve", "enable")
-            .send()?
-            .error_for_status()?
-            .json::<Value>()?;
-
-        Ok(parse_bailian_transcription_result(
-            request,
-            self.id(),
-            &result_json,
-        ))
+            for temp_audio_path in temp_audio_paths {
+                let _ = std::fs::remove_file(temp_audio_path);
+            }
+            transcription_result
+        }
     }
+}
+
+fn transcribe_bailian_file_url(
+    client: &Client,
+    api_key: &str,
+    request: &AsrTranscriptionRequest,
+    provider: AsrProviderId,
+    file_url: &str,
+) -> Result<TranscriptDocument, AsrError> {
+    let task_id = submit_bailian_qwen_task(client, api_key, request, file_url)?;
+    let transcription_url = poll_bailian_task(client, api_key, request, &task_id)?;
+    let result_json = client
+        .get(transcription_url)
+        .header("X-DashScope-OssResourceResolve", "enable")
+        .send()?
+        .error_for_status()?
+        .json::<Value>()?;
+
+    Ok(parse_bailian_transcription_result(
+        request,
+        provider,
+        &result_json,
+    ))
 }
 
 fn validate_public_media_url(raw_url: &str) -> Result<Url, AsrError> {
@@ -737,93 +782,137 @@ impl AsrProvider for VolcDoubaoProvider {
             .build()?;
         let resource_id = request.config.volc_doubao.resource_id.trim();
         let resource_id = if resource_id.is_empty() {
-            "volc.seedasr.auc"
+            "volc.bigasr.auc_turbo"
         } else {
             resource_id
         };
 
-        let is_public_url =
-            request.audio_path.starts_with("http://") || request.audio_path.starts_with("https://");
-        let audio = if is_public_url {
-            json!({ "url": validate_public_media_url(&request.audio_path)?.to_string() })
-        } else {
-            let temp_audio_path = extract_audio_to_temp(&request.audio_path)
-                .map_err(|e| AsrError::LocalProcessing(e))?;
-            let audio_result = (|| -> Result<Value, AsrError> {
-                let audio_bytes = std::fs::read(&temp_audio_path)
-                    .map_err(|e| AsrError::LocalProcessing(format!("读取临时音频失败：{e}")))?;
-                let audio_b64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
-                Ok(json!({ "data": audio_b64 }))
-            })();
-            let _ = std::fs::remove_file(&temp_audio_path);
-            audio_result?
-        };
-
         let uid = request.config.volc_doubao.app_id.trim();
         let uid = if uid.is_empty() { "intervox_user" } else { uid };
+        let is_public_url =
+            request.audio_path.starts_with("http://") || request.audio_path.starts_with("https://");
+        if is_public_url {
+            let audio =
+                json!({ "url": validate_public_media_url(&request.audio_path)?.to_string() });
+            return transcribe_volc_audio(&client, &api_key, resource_id, uid, request, audio);
+        }
 
-        let payload = json!({
-            "user": {
-                "uid": uid
-            },
-            "audio": audio,
-            "request": {
-                "model_name": "bigmodel",
-                "enable_itn": true,
-                "enable_punc": true
+        let temp_audio_paths =
+            extract_audio_chunks_to_temp(&request.audio_path, VOLC_LOCAL_CHUNK_SECONDS)
+                .map_err(AsrError::LocalProcessing)?;
+        let transcription_result = (|| -> Result<TranscriptDocument, AsrError> {
+            let mut document = TranscriptDocument {
+                source_language: request.config.source_language.clone(),
+                target_language: request.config.target_language.clone(),
+                provider: self.id(),
+                segments: Vec::new(),
+            };
+            let mut chunk_offset_ms = 0;
+
+            for (chunk_index, temp_audio_path) in temp_audio_paths.iter().enumerate() {
+                let audio_bytes = std::fs::read(temp_audio_path).map_err(|error| {
+                    AsrError::LocalProcessing(format!(
+                        "Unable to read temporary audio chunk: {error}"
+                    ))
+                })?;
+                let audio_b64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
+                let mut chunk_document = transcribe_volc_audio(
+                    &client,
+                    &api_key,
+                    resource_id,
+                    uid,
+                    request,
+                    json!({ "data": audio_b64 }),
+                )?;
+
+                for segment in &mut chunk_document.segments {
+                    segment.id = format!("chunk_{chunk_index}_{}", segment.id);
+                    segment.start_ms += chunk_offset_ms;
+                    segment.end_ms += chunk_offset_ms;
+                }
+                document.segments.extend(chunk_document.segments);
+                chunk_offset_ms += audio_duration_ms(temp_audio_path)?;
             }
-        });
 
-        let response = client
-            .post("https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash")
-            .header("Content-Type", "application/json")
-            .header("X-Api-Key", api_key)
-            .header("X-Api-Resource-Id", resource_id)
-            .header("X-Api-Request-Id", Uuid::new_v4().to_string())
-            .header("X-Api-Sequence", "-1")
-            .json(&payload)
-            .send()?;
+            Ok(document)
+        })();
 
-        let headers = response.headers().clone();
-        let status = response.status();
-        let response_text = response.text()?;
-
-        if !status.is_success() {
-            return Err(AsrError::Api(format!(
-                "火山引擎豆包录音识别失败 (HTTP {}): {}",
-                status,
-                truncate_for_error(&response_text)
-            )));
+        for temp_audio_path in temp_audio_paths {
+            let _ = std::fs::remove_file(temp_audio_path);
         }
-
-        let api_status = headers
-            .get("X-Api-Status-Code")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default();
-        if !api_status.is_empty() && api_status != "20000000" {
-            let api_message = headers
-                .get("X-Api-Message")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("未知错误");
-            let logid = headers
-                .get("X-Tt-Logid")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("-");
-            return Err(AsrError::Api(format!(
-                "火山引擎豆包录音识别失败：{} {} (logid: {})",
-                api_status, api_message, logid
-            )));
-        }
-
-        let response_json: Value = serde_json::from_str(&response_text).map_err(|error| {
-            AsrError::Api(format!(
-                "火山引擎豆包录音识别响应不是 JSON：{error}；原始响应：{}",
-                truncate_for_error(&response_text)
-            ))
-        })?;
-
-        parse_volc_flash_transcription_result(request, self.id(), &response_json)
+        transcription_result
     }
+}
+
+fn transcribe_volc_audio(
+    client: &Client,
+    api_key: &str,
+    resource_id: &str,
+    uid: &str,
+    request: &AsrTranscriptionRequest,
+    audio: Value,
+) -> Result<TranscriptDocument, AsrError> {
+    let payload = json!({
+        "user": {
+            "uid": uid
+        },
+        "audio": audio,
+        "request": {
+            "model_name": "bigmodel",
+            "enable_itn": true,
+            "enable_punc": true
+        }
+    });
+
+    let response = client
+        .post("https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash")
+        .header("Content-Type", "application/json")
+        .header("X-Api-Key", api_key)
+        .header("X-Api-Resource-Id", resource_id)
+        .header("X-Api-Request-Id", Uuid::new_v4().to_string())
+        .header("X-Api-Sequence", "-1")
+        .json(&payload)
+        .send()?;
+
+    let headers = response.headers().clone();
+    let status = response.status();
+    let response_text = response.text()?;
+
+    if !status.is_success() {
+        return Err(AsrError::Api(format!(
+            "火山引擎豆包录音识别失败 (HTTP {}): {}",
+            status,
+            truncate_for_error(&response_text)
+        )));
+    }
+
+    let api_status = headers
+        .get("X-Api-Status-Code")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !api_status.is_empty() && api_status != "20000000" {
+        let api_message = headers
+            .get("X-Api-Message")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("未知错误");
+        let logid = headers
+            .get("X-Tt-Logid")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("-");
+        return Err(AsrError::Api(format!(
+            "火山引擎豆包录音识别失败：{} {} (logid: {})",
+            api_status, api_message, logid
+        )));
+    }
+
+    let response_json: Value = serde_json::from_str(&response_text).map_err(|error| {
+        AsrError::Api(format!(
+            "火山引擎豆包录音识别响应不是 JSON：{error}；原始响应：{}",
+            truncate_for_error(&response_text)
+        ))
+    })?;
+
+    parse_volc_flash_transcription_result(request, AsrProviderId::VolcDoubao, &response_json)
 }
 
 impl AsrProvider for LocalWhisperProvider {
@@ -958,10 +1047,13 @@ fn truncate_for_error(text: &str) -> String {
     trimmed[..limit].to_string()
 }
 
-fn extract_audio_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, String> {
+fn extract_audio_chunks_to_temp(
+    input_video_path: &str,
+    chunk_seconds: u64,
+) -> Result<Vec<std::path::PathBuf>, String> {
     let input_path = std::path::Path::new(input_video_path);
     if !input_path.exists() {
-        return Err("输入视频文件不存在。".to_string());
+        return Err("Input video file does not exist.".to_string());
     }
 
     let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
@@ -971,9 +1063,8 @@ fn extract_audio_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, S
     let temp_dir = dir.join("exports").join("temp_audio");
     std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
-    let output_audio_path = temp_dir.join(format!("temp_asr_{}.mp3", uuid::Uuid::new_v4()));
-
-    // Run FFmpeg: extract mono mp3 at 16kHz, 64k bitrate
+    let chunk_prefix = format!("temp_asr_chunk_{}", uuid::Uuid::new_v4());
+    let output_pattern = temp_dir.join(format!("{chunk_prefix}_%03d.mp3"));
     let mut cmd = std::process::Command::new(crate::export::ffmpeg_path());
     cmd.arg("-y")
         .arg("-i")
@@ -987,17 +1078,63 @@ fn extract_audio_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, S
         .arg("1")
         .arg("-b:a")
         .arg("64k")
-        .arg(&output_audio_path);
+        .arg("-f")
+        .arg("segment")
+        .arg("-segment_time")
+        .arg(chunk_seconds.to_string())
+        .arg("-reset_timestamps")
+        .arg("1")
+        .arg(&output_pattern);
 
     let output = cmd
         .output()
-        .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
+        .map_err(|_| "FFmpeg was not found. Please install FFmpeg first.".to_string())?;
     if !output.status.success() {
         let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("音频提取失败：{err_msg}"));
+        return Err(format!("Audio chunk extraction failed: {err_msg}"));
     }
 
-    Ok(output_audio_path)
+    let mut chunks = std::fs::read_dir(&temp_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&chunk_prefix) && name.ends_with(".mp3"))
+        })
+        .collect::<Vec<_>>();
+    chunks.sort();
+    if chunks.is_empty() {
+        return Err("FFmpeg did not produce any audio chunks.".to_string());
+    }
+
+    Ok(chunks)
+}
+
+fn audio_duration_ms(path: &std::path::Path) -> Result<u64, AsrError> {
+    let ffprobe = crate::export::ffprobe_path();
+    let output = std::process::Command::new(ffprobe)
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(path)
+        .output()
+        .map_err(|_| AsrError::LocalProcessing("ffprobe was not found.".to_string()))?;
+    if !output.status.success() {
+        return Err(AsrError::LocalProcessing(
+            "Unable to read extracted audio chunk duration.".to_string(),
+        ));
+    }
+
+    let seconds = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<f64>()
+        .map_err(|error| AsrError::LocalProcessing(error.to_string()))?;
+    Ok((seconds * 1000.0).round() as u64)
 }
 
 #[derive(Debug, Deserialize)]

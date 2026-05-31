@@ -13,7 +13,7 @@ const SEGMENT_FIT_PADDING_MS: u64 = 80;
 const MAX_TEMPO: f32 = 3.0;
 const MAX_ENGLISH_SUBTITLE_WIDTH: usize = 36;
 const MAX_TARGET_SUBTITLE_WIDTH: usize = 28;
-const PLAYBACK_CACHE_VERSION: &str = "v2-h264-preview";
+const PLAYBACK_CACHE_VERSION: &str = "v3-h264-preview-no-upscale";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ExportRequest {
@@ -89,9 +89,9 @@ fn write_subtitles(
     options: Option<&SubtitleOptions>,
     output_dir: &Path,
 ) -> Result<Option<PathBuf>, ExportError> {
-    let Some(options) = options.filter(|options| {
-        options.show_english || options.show_target_language
-    }) else {
+    let Some(options) =
+        options.filter(|options| options.show_english || options.show_target_language)
+    else {
         return Ok(None);
     };
 
@@ -136,8 +136,7 @@ fn build_subtitle_srt(options: &SubtitleOptions) -> String {
                 continue;
             }
 
-            let start_ms =
-                segment.start_ms + (duration_ms * cue_index as u64 / cue_count as u64);
+            let start_ms = segment.start_ms + (duration_ms * cue_index as u64 / cue_count as u64);
             let end_ms =
                 segment.start_ms + (duration_ms * (cue_index + 1) as u64 / cue_count as u64);
             subtitles.push_str(&format!(
@@ -161,7 +160,10 @@ fn split_subtitle_lines(text: &str, max_width: usize) -> Vec<String> {
 
     let mut lines = Vec::new();
     let mut current_line = String::new();
-    for word in normalized.split(' ').flat_map(|word| split_long_word(word, max_width)) {
+    for word in normalized
+        .split(' ')
+        .flat_map(|word| split_long_word(word, max_width))
+    {
         let separator_width = usize::from(!current_line.is_empty());
         if !current_line.is_empty()
             && subtitle_visual_width(&current_line) + separator_width + subtitle_visual_width(&word)
@@ -279,7 +281,11 @@ fn subtitle_visual_width(text: &str) -> usize {
 }
 
 fn subtitle_character_width(character: char) -> usize {
-    if character.is_ascii() { 1 } else { 2 }
+    if character.is_ascii() {
+        1
+    } else {
+        2
+    }
 }
 
 fn srt_timestamp(milliseconds: u64) -> String {
@@ -323,6 +329,11 @@ pub fn ffmpeg_path() -> PathBuf {
         return PathBuf::from(path);
     }
 
+    #[cfg(target_os = "windows")]
+    if let Some(path) = winget_ffmpeg_path() {
+        return path;
+    }
+
     [
         "/opt/homebrew/bin/ffmpeg",
         "/usr/local/bin/ffmpeg",
@@ -332,6 +343,33 @@ pub fn ffmpeg_path() -> PathBuf {
     .map(PathBuf::from)
     .find(|path| path.is_file())
     .unwrap_or_else(|| PathBuf::from("ffmpeg"))
+}
+
+#[cfg(target_os = "windows")]
+fn winget_ffmpeg_path() -> Option<PathBuf> {
+    let packages_dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+        .join("Microsoft")
+        .join("WinGet")
+        .join("Packages");
+
+    for package in fs::read_dir(packages_dir).ok()?.flatten() {
+        if !package
+            .file_name()
+            .to_string_lossy()
+            .starts_with("Gyan.FFmpeg_")
+        {
+            continue;
+        }
+
+        for build in fs::read_dir(package.path()).ok()?.flatten() {
+            let candidate = build.path().join("bin").join("ffmpeg.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
 }
 
 fn build_voiceover(
@@ -367,7 +405,11 @@ fn build_voiceover(
 fn build_voiceover_filter(tts: &TtsDocument) -> Result<String, ExportError> {
     let mut filters = Vec::with_capacity(tts.segments.len() + 1);
     for (index, segment) in tts.segments.iter().enumerate() {
-        let tempo = segment_tempo(segment.start_ms, segment.end_ms, Path::new(&segment.audio_path))?;
+        let tempo = segment_tempo(
+            segment.start_ms,
+            segment.end_ms,
+            Path::new(&segment.audio_path),
+        )?;
         filters.push(segment_filter(index, segment.start_ms, tempo));
     }
 
@@ -454,8 +496,12 @@ fn wav_duration_ms(path: &Path) -> Result<u64, ExportError> {
             break;
         }
         let chunk_id = &chunk_header[0..4];
-        let chunk_size =
-            u32::from_le_bytes([chunk_header[4], chunk_header[5], chunk_header[6], chunk_header[7]]);
+        let chunk_size = u32::from_le_bytes([
+            chunk_header[4],
+            chunk_header[5],
+            chunk_header[6],
+            chunk_header[7],
+        ]);
 
         if chunk_id == b"fmt " {
             let mut fmt = [0u8; 16];
@@ -504,6 +550,7 @@ fn mux_video(
     } else {
         original_audio_volume
     };
+    let transcode_video = should_transcode_video_for_mp4(media_url);
     let mut command = ffmpeg_command();
     command
         .arg("-y")
@@ -514,9 +561,7 @@ fn mux_video(
     if let Some(subtitle_path) = subtitle_path {
         command.arg("-i").arg(subtitle_path);
     }
-    command
-        .arg("-map")
-        .arg("0:v:0");
+    command.arg("-map").arg("0:v:0");
 
     command
         .arg("-filter_complex")
@@ -538,14 +583,30 @@ fn mux_video(
             .arg("default");
     }
 
-    command
-        .arg("-c:v")
-        .arg("copy")
-        .arg("-c:a")
-        .arg("aac")
-        .arg(video_path);
+    if transcode_video {
+        append_h264_video_args(&mut command, &playback_h264_encoder());
+    } else {
+        command.arg("-c:v").arg("copy");
+    }
+    command.arg("-c:a").arg("aac").arg(video_path);
 
     run_command(&mut command)
+}
+
+fn should_transcode_video_for_mp4(media_url: &str) -> bool {
+    let path = Path::new(media_url);
+    if !path.is_file() {
+        return false;
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    probe_playback_media(path)
+        .map(|info| playback_video_mode(&ext, &info) == PlaybackVideoMode::Transcode)
+        .unwrap_or(false)
 }
 
 fn clamp_volume(value: f32) -> f32 {
@@ -562,9 +623,15 @@ fn run_command(command: &mut Command) -> Result<(), ExportError> {
         return Ok(());
     }
 
-    Err(ExportError::CommandFailed(
-        String::from_utf8_lossy(&output.stderr).to_string(),
-    ))
+    Err(ExportError::CommandFailed(command_error_summary(
+        &output.stderr,
+    )))
+}
+
+fn command_error_summary(stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let lines = stderr.lines().collect::<Vec<_>>();
+    lines[lines.len().saturating_sub(18)..].join("\n")
 }
 
 fn resolve_output_dir(output_dir: Option<&str>) -> Result<PathBuf, std::io::Error> {
@@ -743,9 +810,13 @@ fn playback_video_mode(ext: &str, info: &PlaybackMediaInfo) -> PlaybackVideoMode
     }
 }
 
-fn ffprobe_path() -> PathBuf {
+pub fn ffprobe_path() -> PathBuf {
     let ffmpeg = ffmpeg_path();
-    let ffprobe = ffmpeg.with_file_name("ffprobe");
+    let ffprobe = ffmpeg.with_file_name(if cfg!(target_os = "windows") {
+        "ffprobe.exe"
+    } else {
+        "ffprobe"
+    });
     if ffprobe.is_file() {
         ffprobe
     } else {
@@ -787,27 +858,28 @@ fn playback_conversion_command(
         .arg("aac");
 
     if playback_mode == PlaybackVideoMode::Transcode {
-        command
-            .arg("-c:v")
-            .arg(encoder)
-            .arg("-vf")
-            .arg("scale=1920:-2:force_original_aspect_ratio=decrease")
-            .arg("-pix_fmt")
-            .arg("yuv420p");
-        if encoder == "h264_videotoolbox" {
-            command.arg("-allow_sw").arg("1").arg("-b:v").arg("6M");
-        } else {
-            command.arg("-preset").arg("veryfast").arg("-crf").arg("23");
-        }
+        append_h264_video_args(&mut command, encoder);
     } else {
         command.arg("-c:v").arg("copy");
     }
 
+    command.arg("-movflags").arg("+faststart").arg(output_path);
     command
-        .arg("-movflags")
-        .arg("+faststart")
-        .arg(output_path);
+}
+
+fn append_h264_video_args(command: &mut Command, encoder: &str) {
     command
+        .arg("-c:v")
+        .arg(encoder)
+        .arg("-vf")
+        .arg("scale='min(1920,iw)':-2")
+        .arg("-pix_fmt")
+        .arg("yuv420p");
+    if encoder == "h264_videotoolbox" {
+        command.arg("-allow_sw").arg("1").arg("-b:v").arg("6M");
+    } else {
+        command.arg("-preset").arg("veryfast").arg("-crf").arg("23");
+    }
 }
 
 #[cfg(test)]
@@ -903,9 +975,7 @@ mod tests {
     fn bilingual_subtitles_render_english_above_target_language() {
         let subtitles = build_subtitle_srt(&subtitle_options(true, true));
 
-        assert!(subtitles.contains(
-            "1\n00:00:01,230 --> 00:00:04,560\nHello world\n안녕하세요\n"
-        ));
+        assert!(subtitles.contains("1\n00:00:01,230 --> 00:00:04,560\nHello world\n안녕하세요\n"));
     }
 
     #[test]
@@ -976,10 +1046,7 @@ mod tests {
             audio_codec: Some("opus".to_string()),
         };
 
-        assert_eq!(
-            playback_video_mode("mkv", &info),
-            PlaybackVideoMode::Remux
-        );
+        assert_eq!(playback_video_mode("mkv", &info), PlaybackVideoMode::Remux);
     }
 
     #[test]
@@ -989,9 +1056,6 @@ mod tests {
             audio_codec: Some("aac".to_string()),
         };
 
-        assert_eq!(
-            playback_video_mode("mp4", &info),
-            PlaybackVideoMode::Direct
-        );
+        assert_eq!(playback_video_mode("mp4", &info), PlaybackVideoMode::Direct);
     }
 }

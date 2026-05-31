@@ -279,7 +279,10 @@ fn select_local_file() -> Result<Option<String>, String> {
     let file = rfd::FileDialog::new()
         .add_filter(
             "Video/Audio",
-            &["mp4", "mkv", "avi", "mov", "mp3", "wav", "m4a", "flac"],
+            &[
+                "mp4", "m4v", "mkv", "avi", "mov", "webm", "rm", "rmvb", "wmv", "flv", "mpg",
+                "mpeg", "ts", "mts", "m2ts", "mp3", "wav", "m4a", "flac",
+            ],
         )
         .pick_file();
     Ok(file.map(|p| p.to_string_lossy().to_string()))
