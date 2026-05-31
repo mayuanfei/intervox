@@ -25,7 +25,7 @@ export const DEFAULT_ASR_CONFIG: AsrConfig = {
     project_id: "",
   },
   volc_doubao: {
-    resource_id: "volc.bigasr.auc_turbo",
+    resource_id: "volc.seedasr.auc",
     app_id: "",
   },
   local_whisper: {
@@ -155,13 +155,11 @@ export const DOUBAO_TTS_MODEL_OPTIONS = [
 
 // Volcengine Doubao TTS Voice Presets
 export const DOUBAO_TTS_VOICE_OPTIONS = [
-  { value: "zh_female_vv_uranus_bigtts", label: "VV 活泼灵动女声 (Uranus)" },
-  { value: "zh_female_vv_jupiter_bigtts", label: "VV 甜美温柔女声 (Jupiter)" },
-  { value: "zh_male_yunzhou_uranus_bigtts", label: "云舟 清爽沉稳男声 (Uranus)" },
-  { value: "zh_male_xiaotian_uranus_bigtts", label: "小天 清爽磁性男声 (Uranus)" },
-  { value: "zh_female_popo_mars_bigtts", label: "泡泡 甜美女声 (Mars)" },
-  { value: "zh_female_tianmeitaozi_mars_bigtts", label: "甜美桃子 (Mars)" },
-  { value: "BV700_streaming", label: "灿灿 亲切自然女声 (标准级)" },
-  { value: "BV001_streaming", label: "标准新闻女声 (标准级)" },
-  { value: "BV002_streaming", label: "标准通用男声 (标准级)" },
+  { value: "zh_female_vv_uranus_bigtts", label: "Vivi 活泼灵动女声 (Uranus - 2.0)" },
+  { value: "zh_male_m191_uranus_bigtts", label: "云舟 清爽沉稳男声 (Uranus - 2.0)" },
+  { value: "zh_female_xiaohe_uranus_bigtts", label: "小何 亲切自然女声 (Uranus - 2.0)" },
+  { value: "en_male_tim_uranus_bigtts", label: "Tim 英文男声 (Uranus - 2.0)" },
+  { value: "zh_female_story", label: "温润女声 (Story - 1.0)" },
+  { value: "zh_female_common", label: "标准女声 (Common - 1.0)" },
+  { value: "zh_male_common", label: "标准男声 (Common - 1.0)" },
 ];

@@ -37,6 +37,7 @@ export interface AsrConfig {
   volc_doubao: {
     resource_id: string;
     app_id: string;
+    tts_resource_id?: string;
   };
   local_whisper: {
     model: WhisperModel;

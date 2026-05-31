@@ -164,8 +164,8 @@ interface IntervoxContextType {
 const IntervoxContext = createContext<IntervoxContextType | undefined>(undefined);
 
 // Cache Helpers
-const ASR_CACHE_PREFIX = "intervox:asr:";
-const TRANSLATION_CACHE_PREFIX = "intervox:translation:";
+const ASR_CACHE_PREFIX = "intervox:asr:v2:";
+const TRANSLATION_CACHE_PREFIX = "intervox:translation:v2:";
 
 function hashString(value: string) {
   let hash = 5381;
@@ -188,6 +188,17 @@ function writeLocalJson(key: string, value: unknown) {
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
   } catch {}
+}
+
+function isPlaceholderTranscript(document?: TranscriptDocument | null) {
+  if (!document?.segments?.length) {
+    return false;
+  }
+
+  return document.segments.some((segment) => {
+    const text = segment.text.trim().toLowerCase();
+    return text.includes("placeholder") || text.includes("占位符");
+  });
 }
 
 export function IntervoxProvider({ children }: { children: React.ReactNode }) {
@@ -378,7 +389,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     const cached = readLocalJson<any>(`${ASR_CACHE_PREFIX}${activeAsrCacheKey}`);
-    setCachedTranscript(cached);
+    setCachedTranscript(isPlaceholderTranscript(cached?.document) ? null : cached);
   }, [activeAsrCacheKey]);
 
   useEffect(() => {
@@ -649,13 +660,22 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  useEffect(() => {
+    // Validate credentials on initial load so the UI knows if keys exist
+    validateProvider();
+    validateVolcProvider();
+    validateVolcArkProvider();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+
   const startTranscription = async (forceRemote = false) => {
     if (!activeMediaInput) {
       setTranscriptionError("请提供音视频源。");
       return;
     }
 
-    if (!forceRemote && cachedTranscript) {
+    if (!forceRemote && cachedTranscript && !isPlaceholderTranscript(cachedTranscript.document)) {
       setTranscript(cachedTranscript.document);
       setTranscriptionProgress(1);
       setTranscriptionStatus("从本机缓存载入成功。");
@@ -799,7 +819,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
     setIsSynthesizing(true);
     setTtsError(null);
-    setTtsStatus("调用 CosyVoice 配音合成中...");
+    setTtsStatus(config.provider === "volc_doubao" ? "调用豆包语音配音合成中..." : "调用 CosyVoice 配音合成中...");
 
     try {
       const result = await invokeOrFallback<TtsDocument>(
@@ -818,6 +838,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             sample_rate: 24000,
             original_video_path: synthesisMode === "clone" ? activeMediaInput : null,
             app_id: config.volc_doubao.app_id || null,
+            tts_resource_id: config.volc_doubao.tts_resource_id || null,
           }
         },
         {
@@ -922,12 +943,18 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       let asrResult: TranscriptDocument;
       const cachedAsr = readLocalJson<any>(`${ASR_CACHE_PREFIX}${asrCacheKey}`);
 
-      if (cachedAsr && cachedAsr.document) {
+      if (cachedAsr && cachedAsr.document && !isPlaceholderTranscript(cachedAsr.document)) {
         asrResult = cachedAsr.document;
         updateActiveTaskStage("asr", 1.0, "检测到本地 ASR 识别缓存，已直接载入（跳过 API 调用）。");
         await new Promise((r) => setTimeout(r, 600));
       } else {
-        updateActiveTaskStage("asr", 0.1, "阿里云百炼 ASR 任务提交中...");
+        updateActiveTaskStage(
+          "asr",
+          0.1,
+          configToUse.provider === "volc_doubao"
+            ? "火山引擎豆包录音识别任务提交中..."
+            : "阿里云百炼 ASR 任务提交中..."
+        );
         asrResult = await invokeOrFallback<TranscriptDocument>(
           "asr_transcribe",
           { request: { job_id: `job_${Date.now()}`, audio_path: mediaInput, config: configToUse } },
@@ -1018,7 +1045,13 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       }
 
       setTranslation(translateResult);
-      updateActiveTaskStage("tts_clone", 0.1, "翻译完毕。正在请求百炼 CosyVoice 语音合成/复刻。");
+      updateActiveTaskStage(
+        "tts_clone",
+        0.1,
+        configToUse.provider === "volc_doubao"
+          ? "翻译完毕。正在请求豆包语音合成/复刻。"
+          : "翻译完毕。正在请求百炼 CosyVoice 语音合成/复刻。"
+      );
       await new Promise((r) => setTimeout(r, 800));
 
       // Step 4: TTS / Voice Cloning
@@ -1038,6 +1071,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             sample_rate: 24000,
             original_video_path: synthesisMode === "clone" ? mediaInput : null,
             app_id: configToUse.volc_doubao.app_id || null,
+            tts_resource_id: configToUse.volc_doubao.tts_resource_id || null,
           }
         },
         {

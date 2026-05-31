@@ -23,6 +23,7 @@ pub struct TtsRequest {
     pub sample_rate: u32,
     pub original_video_path: Option<String>,
     pub app_id: Option<String>,
+    pub tts_resource_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -273,14 +274,9 @@ fn synthesize_volc(
         }
     };
 
-    // Determine resource_id
-    let resource_id = if is_clone {
-        "seed-icl-2.0"
-    } else if voice_type.contains("bigtts") {
-        "seed-tts-2.0"
-    } else {
-        "volc.tts.default"
-    };
+    let default_resource_id = default_volc_tts_resource_id(is_clone, &voice_type);
+    let resource_id =
+        normalize_volc_tts_resource_id(request.tts_resource_id.as_deref(), default_resource_id);
 
     let mut segments = Vec::new();
     for (index, segment) in request.translation.segments.iter().enumerate() {
@@ -297,7 +293,7 @@ fn synthesize_volc(
             &client,
             &api_key,
             &app_id,
-            resource_id,
+            &resource_id,
             &voice_type,
             text,
             &audio_path,
@@ -327,6 +323,64 @@ fn synthesize_volc(
     })
 }
 
+fn default_volc_tts_resource_id(is_clone: bool, voice_type: &str) -> &'static str {
+    if is_clone {
+        "seed-icl-2.0"
+    } else if voice_type.contains("bigtts") {
+        "seed-tts-2.0"
+    } else {
+        "volc.service_type.10029"
+    }
+}
+
+fn normalize_volc_tts_resource_id(
+    custom_resource_id: Option<&str>,
+    default_resource_id: &'static str,
+) -> String {
+    let Some(raw_resource_id) = custom_resource_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return default_resource_id.to_string();
+    };
+
+    if let Some(mapped_resource_id) =
+        map_volc_console_instance_id(raw_resource_id, default_resource_id)
+    {
+        eprintln!(
+            "[TTS-Volc] 将控制台实例ID {} 映射为 X-Api-Resource-Id {}",
+            raw_resource_id, mapped_resource_id
+        );
+        return mapped_resource_id.to_string();
+    }
+
+    raw_resource_id.to_string()
+}
+
+fn map_volc_console_instance_id(
+    raw_resource_id: &str,
+    default_resource_id: &'static str,
+) -> Option<&'static str> {
+    let normalized: String = raw_resource_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+
+    if normalized.starts_with("ttsseedtts2") {
+        Some("seed-tts-2.0")
+    } else if normalized.starts_with("ttsseedicl2") {
+        Some("seed-icl-2.0")
+    } else if normalized.starts_with("ttsseedtts1") {
+        Some("seed-tts-1.0")
+    } else if normalized.starts_with("ttsseedicl1") {
+        Some("seed-icl-1.0")
+    } else if normalized.starts_with("tts") {
+        Some(default_resource_id)
+    } else {
+        None
+    }
+}
 
 fn extract_slice_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, String> {
     let input_path = std::path::Path::new(input_video_path);
@@ -529,28 +583,15 @@ fn synthesize_volc_segment(
     text: &str,
     output_path: &std::path::Path,
 ) -> Result<(), TtsError> {
-    let reqid = Uuid::new_v4().to_string();
-    let payload = json!({
-        "app": { "appid": app_id },
-        "user": { "uid": "intervox_user" },
-        "audio": {
-            "voice_type": voice_type,
-            "encoding": "wav",
-            "sample_rate": 24000
-        },
-        "request": {
-            "reqid": reqid,
-            "text": text,
-            "text_type": "plain"
-        }
-    });
+    let req_id = Uuid::new_v4().to_string();
+    let payload = build_volc_tts_payload(app_id, voice_type, text, &req_id);
 
     let response = client
         .post("https://openspeech.bytedance.com/api/v3/tts/unidirectional")
         .header("Content-Type", "application/json")
         .header("X-Api-Key", api_key)
         .header("X-Api-Resource-Id", resource_id)
-        .header("X-Api-Request-Id", Uuid::new_v4().to_string())
+        .header("X-Api-Request-Id", &req_id)
         .json(&payload)
         .send()?;
 
@@ -560,69 +601,120 @@ fn synthesize_volc_segment(
         return Err(TtsError::Api(format!("火山引擎 TTS 合成失败 (HTTP {}): {}", status, err_text)));
     }
 
-    // Parse NDJSON chunked response: each line may contain base64 audio data
-    let body = response.text().unwrap_or_default();
+    // Read response as raw bytes first (official V3 returns chunked binary audio)
+    let raw_bytes = response.bytes()?;
+
+    // Check if the raw response is actually audio data (non-empty and doesn't start with '{')
+    if !raw_bytes.is_empty() && raw_bytes[0] != b'{' && raw_bytes[0] != b'[' {
+        // Raw binary audio response
+        fs::write(output_path, raw_bytes.as_ref())?;
+        return Ok(());
+    }
+
+    // Fallback: try parsing as JSON stream with base64-encoded audio
+    let body = String::from_utf8_lossy(&raw_bytes).to_string();
+    let stream_objects = parse_volc_stream_objects(&body);
     let mut audio_data: Vec<u8> = Vec::new();
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(obj) = serde_json::from_str::<Value>(line) {
-            if let Some(data_str) = obj.get("data").and_then(Value::as_str) {
-                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data_str) {
-                    audio_data.extend_from_slice(&decoded);
-                }
+
+    for obj in &stream_objects {
+        if let Some(data_str) = obj.get("data").and_then(Value::as_str) {
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data_str) {
+                audio_data.extend_from_slice(&decoded);
             }
-            // Also check nested audio.data path
-            if let Some(data_str) = obj.pointer("/audio/data").and_then(Value::as_str) {
-                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data_str) {
-                    audio_data.extend_from_slice(&decoded);
-                }
+        }
+        if let Some(data_str) = obj.pointer("/audio/data").and_then(Value::as_str) {
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data_str) {
+                audio_data.extend_from_slice(&decoded);
             }
         }
     }
 
     if audio_data.is_empty() {
-        let mut server_errors = Vec::new();
-        for line in body.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(obj) = serde_json::from_str::<Value>(line) {
-                if let Some(code) = obj.get("code").or_else(|| obj.get("error_code")) {
-                    if let Some(msg) = obj.get("message").or_else(|| obj.get("err_msg")).or_else(|| obj.get("error")) {
-                        server_errors.push(format!("错误码 {}: {}", code, msg));
-                    } else {
-                        server_errors.push(format!("错误码 {}", code));
-                    }
-                } else if let Some(msg) = obj.get("message").or_else(|| obj.get("err_msg")).or_else(|| obj.get("error")) {
-                    server_errors.push(msg.to_string());
-                }
-            }
-        }
-        
-        let err_detail = if !server_errors.is_empty() {
-            server_errors.join("; ")
-        } else {
-            let trimmed_body = body.trim();
-            if !trimmed_body.is_empty() {
-                let limit = trimmed_body.char_indices().map(|(i, _)| i).nth(200).unwrap_or(trimmed_body.len());
-                format!("原始响应：{}", &trimmed_body[..limit])
-            } else {
-                "响应为空".to_string()
-            }
-        };
+        let err_detail = volc_stream_error_detail(&stream_objects, &body);
 
         return Err(TtsError::Api(format!(
-            "火山引擎 TTS 未返回有效音频数据（资源ID: {}, 音色: {}）。原因：{}",
-            resource_id, voice_type, err_detail
+            "火山引擎 TTS 未返回有效音频数据（App ID: {}, 资源ID: {}, 音色: {}）。原因：{}",
+            app_id, resource_id, voice_type, err_detail
         )));
     }
 
     fs::write(output_path, &audio_data)?;
     Ok(())
+}
+
+fn build_volc_tts_payload(app_id: &str, voice_type: &str, text: &str, _req_id: &str) -> Value {
+    let model = if voice_type.contains("bigtts") {
+        "seed-tts-2.0-standard"
+    } else {
+        "seed-tts-1.0"
+    };
+
+    json!({
+        "app": {
+            "appid": app_id
+        },
+        "user": {
+            "uid": "intervox_user"
+        },
+        "req_params": {
+            "text": text,
+            "model": model,
+            "speaker": voice_type,
+            "audio_params": {
+                "format": "wav",
+                "sample_rate": 24000
+            }
+        }
+    })
+}
+
+fn parse_volc_stream_objects(body: &str) -> Vec<Value> {
+    let objects: Vec<Value> = serde_json::Deserializer::from_str(body)
+        .into_iter::<Value>()
+        .filter_map(Result::ok)
+        .collect();
+
+    if !objects.is_empty() {
+        return objects;
+    }
+
+    body.lines()
+        .filter_map(|line| {
+            let line = line.trim().strip_prefix("data:").unwrap_or(line.trim()).trim();
+            if line.is_empty() {
+                None
+            } else {
+                serde_json::from_str::<Value>(line).ok()
+            }
+        })
+        .collect()
+}
+
+fn volc_stream_error_detail(stream_objects: &[Value], body: &str) -> String {
+    let mut server_errors = Vec::new();
+    for obj in stream_objects {
+        if let Some(code) = obj.get("code").or_else(|| obj.get("error_code")) {
+            if let Some(msg) = obj.get("message").or_else(|| obj.get("err_msg")).or_else(|| obj.get("error")) {
+                server_errors.push(format!("错误码 {}: {}", code, msg));
+            } else {
+                server_errors.push(format!("错误码 {}", code));
+            }
+        } else if let Some(msg) = obj.get("message").or_else(|| obj.get("err_msg")).or_else(|| obj.get("error")) {
+            server_errors.push(msg.to_string());
+        }
+    }
+
+    if !server_errors.is_empty() {
+        server_errors.join("; ")
+    } else {
+        let trimmed_body = body.trim();
+        if !trimmed_body.is_empty() {
+            let limit = trimmed_body.char_indices().map(|(i, _)| i).nth(200).unwrap_or(trimmed_body.len());
+            format!("原始响应：{}", &trimmed_body[..limit])
+        } else {
+            "响应为空".to_string()
+        }
+    }
 }
 
 fn resolve_output_dir(output_dir: Option<&str>) -> Result<PathBuf, std::io::Error> {
@@ -734,5 +826,67 @@ mod tests {
         let error = ensure_translation_has_text(&translation).expect_err("empty text should fail");
 
         assert!(error.to_string().contains("seg_1"));
+    }
+
+    #[test]
+    fn maps_volc_seed_tts2_console_instance_to_resource_id() {
+        assert_eq!(
+            normalize_volc_tts_resource_id(
+                Some("TTS-SeedTTS2.02000000775448651362"),
+                "volc.service_type.10029",
+            ),
+            "seed-tts-2.0"
+        );
+    }
+
+    #[test]
+    fn keeps_explicit_volc_resource_id() {
+        assert_eq!(
+            normalize_volc_tts_resource_id(Some("seed-tts-2.0"), "volc.service_type.10029"),
+            "seed-tts-2.0"
+        );
+    }
+
+    #[test]
+    fn defaults_empty_volc_resource_id() {
+        assert_eq!(
+            normalize_volc_tts_resource_id(Some(" "), "seed-tts-2.0"),
+            "seed-tts-2.0"
+        );
+    }
+
+    #[test]
+    fn builds_volc_v3_payload_with_req_params_speaker() {
+        let payload = build_volc_tts_payload("test-app-id", "zh_male_m191_uranus_bigtts", "你好", "test-req-id");
+
+        assert_eq!(
+            payload.pointer("/app/appid").and_then(Value::as_str),
+            Some("test-app-id")
+        );
+        assert_eq!(
+            payload.pointer("/req_params/speaker").and_then(Value::as_str),
+            Some("zh_male_m191_uranus_bigtts")
+        );
+        assert_eq!(
+            payload.pointer("/req_params/model").and_then(Value::as_str),
+            Some("seed-tts-2.0-standard")
+        );
+        assert_eq!(
+            payload.pointer("/req_params/text").and_then(Value::as_str),
+            Some("你好")
+        );
+        assert_eq!(
+            payload.pointer("/req_params/audio_params/format").and_then(Value::as_str),
+            Some("wav")
+        );
+    }
+
+    #[test]
+    fn parses_concatenated_volc_json_stream() {
+        let objects = parse_volc_stream_objects(r#"{"data":"YQ=="}{"code":20000000,"message":"ok"}"#);
+
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].get("data").and_then(Value::as_str), Some("YQ=="));
+        assert_eq!(objects[1].get("code").and_then(Value::as_i64), Some(20000000));
     }
 }

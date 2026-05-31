@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use crate::credentials::{CredentialError, CredentialStore};
 use reqwest::blocking::Client;
 use reqwest::Url;
@@ -319,7 +320,7 @@ pub fn default_asr_config() -> AsrConfig {
             project_id: String::new(),
         },
         volc_doubao: VolcDoubaoConfig {
-            resource_id: "volc.bigasr.auc_turbo".to_string(),
+            resource_id: "volc.seedasr.auc".to_string(),
             app_id: String::new(),
         },
         local_whisper: LocalWhisperConfig {
@@ -706,11 +707,97 @@ impl AsrProvider for VolcDoubaoProvider {
         &self,
         request: &AsrTranscriptionRequest,
     ) -> Result<TranscriptDocument, AsrError> {
-        Ok(demo_transcript(
-            self.id(),
-            request,
-            "Volc Doubao transcript placeholder",
-        ))
+        let api_key = CredentialStore::default()
+            .get(self.id())?
+            .ok_or(AsrError::MissingCredential)?;
+        let client = Client::builder().timeout(Duration::from_secs(180)).build()?;
+        let resource_id = request.config.volc_doubao.resource_id.trim();
+        let resource_id = if resource_id.is_empty() {
+            "volc.seedasr.auc"
+        } else {
+            resource_id
+        };
+
+        let is_public_url = request.audio_path.starts_with("http://") || request.audio_path.starts_with("https://");
+        let audio = if is_public_url {
+            json!({ "url": validate_public_media_url(&request.audio_path)?.to_string() })
+        } else {
+            let temp_audio_path = extract_audio_to_temp(&request.audio_path)
+                .map_err(|e| AsrError::LocalProcessing(e))?;
+            let audio_result = (|| -> Result<Value, AsrError> {
+                let audio_bytes = std::fs::read(&temp_audio_path)
+                    .map_err(|e| AsrError::LocalProcessing(format!("读取临时音频失败：{e}")))?;
+                let audio_b64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
+                Ok(json!({ "data": audio_b64 }))
+            })();
+            let _ = std::fs::remove_file(&temp_audio_path);
+            audio_result?
+        };
+
+        let uid = request.config.volc_doubao.app_id.trim();
+        let uid = if uid.is_empty() { "intervox_user" } else { uid };
+
+        let payload = json!({
+            "user": {
+                "uid": uid
+            },
+            "audio": audio,
+            "request": {
+                "model_name": "bigmodel",
+                "enable_itn": true,
+                "enable_punc": true
+            }
+        });
+
+        let response = client
+            .post("https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash")
+            .header("Content-Type", "application/json")
+            .header("X-Api-Key", api_key)
+            .header("X-Api-Resource-Id", resource_id)
+            .header("X-Api-Request-Id", Uuid::new_v4().to_string())
+            .header("X-Api-Sequence", "-1")
+            .json(&payload)
+            .send()?;
+
+        let headers = response.headers().clone();
+        let status = response.status();
+        let response_text = response.text()?;
+
+        if !status.is_success() {
+            return Err(AsrError::Api(format!(
+                "火山引擎豆包录音识别失败 (HTTP {}): {}",
+                status,
+                truncate_for_error(&response_text)
+            )));
+        }
+
+        let api_status = headers
+            .get("X-Api-Status-Code")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        if !api_status.is_empty() && api_status != "20000000" {
+            let api_message = headers
+                .get("X-Api-Message")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("未知错误");
+            let logid = headers
+                .get("X-Tt-Logid")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("-");
+            return Err(AsrError::Api(format!(
+                "火山引擎豆包录音识别失败：{} {} (logid: {})",
+                api_status, api_message, logid
+            )));
+        }
+
+        let response_json: Value = serde_json::from_str(&response_text).map_err(|error| {
+            AsrError::Api(format!(
+                "火山引擎豆包录音识别响应不是 JSON：{error}；原始响应：{}",
+                truncate_for_error(&response_text)
+            ))
+        })?;
+
+        parse_volc_flash_transcription_result(request, self.id(), &response_json)
     }
 }
 
@@ -753,6 +840,94 @@ fn demo_transcript(
             confidence: Some(0.93),
         }],
     }
+}
+
+fn parse_volc_flash_transcription_result(
+    request: &AsrTranscriptionRequest,
+    provider: AsrProviderId,
+    result: &Value,
+) -> Result<TranscriptDocument, AsrError> {
+    let mut segments = Vec::new();
+
+    if let Some(utterances) = result.pointer("/result/utterances").and_then(Value::as_array) {
+        for (index, utterance) in utterances.iter().enumerate() {
+            let text = utterance
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            if text.is_empty() {
+                continue;
+            }
+
+            segments.push(TranscriptSegment {
+                id: format!("seg_0_{index}"),
+                start_ms: utterance
+                    .get("start_time")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                end_ms: utterance
+                    .get("end_time")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                speaker_id: extract_speaker_id(utterance).or_else(|| Some("channel_0".to_string())),
+                text: text.to_string(),
+                confidence: None,
+            });
+        }
+    }
+
+    if segments.is_empty() {
+        if let Some(text) = result
+            .pointer("/result/text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            let duration = result
+                .pointer("/audio_info/duration")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    result
+                        .pointer("/result/additions/duration")
+                        .and_then(Value::as_str)
+                        .and_then(|duration| duration.parse::<u64>().ok())
+                })
+                .unwrap_or(0);
+            segments.push(TranscriptSegment {
+                id: "seg_0_0".to_string(),
+                start_ms: 0,
+                end_ms: duration,
+                speaker_id: Some("channel_0".to_string()),
+                text: text.to_string(),
+                confidence: None,
+            });
+        }
+    }
+
+    if segments.is_empty() {
+        return Err(AsrError::Api(format!(
+            "火山引擎豆包录音识别未返回有效转写分段：{}",
+            truncate_for_error(&result.to_string())
+        )));
+    }
+
+    Ok(TranscriptDocument {
+        source_language: request.config.source_language.clone(),
+        target_language: request.config.target_language.clone(),
+        provider,
+        segments,
+    })
+}
+
+fn truncate_for_error(text: &str) -> String {
+    let trimmed = text.trim();
+    let limit = trimmed
+        .char_indices()
+        .map(|(index, _)| index)
+        .nth(300)
+        .unwrap_or(trimmed.len());
+    trimmed[..limit].to_string()
 }
 
 fn extract_audio_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, String> {
@@ -896,15 +1071,29 @@ mod tests {
     fn transcript_keeps_target_language_separate_from_provider() {
         let mut config = default_asr_config();
         config.provider = AsrProviderId::VolcDoubao;
-        let document = transcribe(AsrTranscriptionRequest {
-            job_id: Some("test".to_string()),
-            audio_path: "/tmp/audio.wav".to_string(),
+        let response = json!({
+            "audio_info": { "duration": 2499 },
+            "result": {
+                "text": "关闭透传。",
+                "utterances": [
+                    {
+                        "start_time": 450,
+                        "end_time": 1530,
+                        "text": "关闭透传。"
+                    }
+                ]
+            }
+        });
+        let document = parse_volc_flash_transcription_result(&AsrTranscriptionRequest {
+            job_id: None,
+            audio_path: "https://example.com/audio.mp3".to_string(),
             config,
-        })
+        }, AsrProviderId::VolcDoubao, &response)
         .expect("transcript");
 
         assert_eq!(document.provider, AsrProviderId::VolcDoubao);
         assert_eq!(document.target_language, TargetLanguageCode::ZhHansCn);
+        assert_eq!(document.segments[0].text, "关闭透传。");
     }
 
     #[test]
@@ -983,5 +1172,33 @@ mod tests {
             .expect_err("youtube watch URLs are not media file URLs");
 
         assert!(matches!(error, AsrError::UnsupportedYoutubeUrl));
+    }
+
+    #[test]
+    fn volc_flash_text_fallback_uses_audio_duration() {
+        let request = AsrTranscriptionRequest {
+            job_id: None,
+            audio_path: "https://example.com/audio.mp3".to_string(),
+            config: default_asr_config(),
+        };
+        let response = json!({
+            "audio_info": { "duration": 2499 },
+            "result": {
+                "text": "完整文本。",
+                "utterances": []
+            }
+        });
+
+        let document = parse_volc_flash_transcription_result(
+            &request,
+            AsrProviderId::VolcDoubao,
+            &response,
+        )
+        .expect("text fallback should parse");
+
+        assert_eq!(document.segments.len(), 1);
+        assert_eq!(document.segments[0].start_ms, 0);
+        assert_eq!(document.segments[0].end_ms, 2499);
+        assert_eq!(document.segments[0].text, "完整文本。");
     }
 }

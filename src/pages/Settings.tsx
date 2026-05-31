@@ -253,7 +253,7 @@ export function Settings() {
                     type={showKey ? "text" : "password"}
                     value={credentialDraft}
                     onChange={(e) => setCredentialDraft(e.target.value)}
-                    placeholder="sk-..."
+                    placeholder={status?.ok ? "•••••••••••••••••••••••• (已保存)" : "sk-..."}
                     className="flex-1 px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 pr-10 font-mono"
                   />
                   <button
@@ -341,6 +341,28 @@ export function Settings() {
 
               <div className="space-y-2">
                 <label className="block th-text-muted text-[10px] font-bold uppercase">
+                  TTS RESOURCE ID (可选)
+                </label>
+                <input
+                  type="text"
+                  value={config.volc_doubao.tts_resource_id || ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setConfig((prev) => ({
+                      ...prev,
+                      volc_doubao: {
+                        ...prev.volc_doubao,
+                        tts_resource_id: val,
+                      }
+                    }));
+                  }}
+                  placeholder="留空使用 seed-tts-2.0；不要填 TTS-SeedTTS2... 实例ID"
+                  className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 font-mono text-xs"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block th-text-muted text-[10px] font-bold uppercase">
                   AUTHORIZATION_BEARER (Speech API Key)
                 </label>
                 <div className="flex gap-2 relative">
@@ -348,7 +370,7 @@ export function Settings() {
                     type={showVolcKey ? "text" : "password"}
                     value={volcCredentialDraft}
                     onChange={(e) => setVolcCredentialDraft(e.target.value)}
-                    placeholder="请输入在「豆包语音」控制台申请的 API Key"
+                    placeholder={volcStatus?.ok ? "•••••••••••••••••••••••• (已保存)" : "请输入在「豆包语音」控制台申请的 API Key"}
                     className="flex-1 px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 pr-10 font-mono"
                   />
                   <button
@@ -420,7 +442,7 @@ export function Settings() {
                     type={showVolcArkKey ? "text" : "password"}
                     value={volcArkCredentialDraft}
                     onChange={(e) => setVolcArkCredentialDraft(e.target.value)}
-                    placeholder="请输入在「火山方舟」控制台申请的 API Key"
+                    placeholder={volcArkStatus?.ok ? "•••••••••••••••••••••••• (已保存)" : "请输入在「火山方舟」控制台申请的 API Key"}
                     className="flex-1 px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 pr-10 font-mono"
                   />
                   <button
