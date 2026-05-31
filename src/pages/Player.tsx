@@ -44,6 +44,8 @@ export function Player() {
   const [isDragActive, setIsDragActive] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [playbackRate, setPlaybackRate] = useState(1.0);
+  const [isPreparingPlayback, setIsPreparingPlayback] = useState(false);
+  const [videoResolution, setVideoResolution] = useState("");
 
   // Resolve media source path safely
   useEffect(() => {
@@ -52,17 +54,16 @@ export function Player() {
     if (!activeMediaInput) {
       setMediaSrc("");
       setPlayerError(null);
+      setIsPreparingPlayback(false);
+      setVideoResolution("");
       return;
     }
 
+    setVideoResolution("");
     if (mediaInputMode === "public_url") {
       setMediaSrc(activeMediaInput);
       setPlayerError(null);
-      return;
-    }
-
-    // For local files: if it's already a blob URL set by handleFileSelected, don't override it
-    if (mediaSrc && mediaSrc.startsWith("blob:")) {
+      setIsPreparingPlayback(false);
       return;
     }
 
@@ -70,6 +71,7 @@ export function Player() {
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
         try {
           if (activeMediaInput.startsWith("/") || activeMediaInput.includes(":/") || activeMediaInput.includes(":\\")) {
+            setIsPreparingPlayback(true);
             const playablePath = await invoke<string>("prepare_video_for_playback", { inputPath: activeMediaInput });
             if (!isCurrent) return;
             const converted = convertFileSrc(playablePath);
@@ -84,9 +86,14 @@ export function Player() {
             setPlayerError(e.toString() || "无法转换该媒体以供播放。");
             setMediaSrc("");
           }
+        } finally {
+          if (isCurrent) {
+            setIsPreparingPlayback(false);
+          }
         }
       } else {
         setMediaSrc("");
+        setIsPreparingPlayback(false);
       }
     };
 
@@ -95,7 +102,7 @@ export function Player() {
     return () => {
       isCurrent = false;
     };
-  }, [activeMediaInput, mediaInputMode, mediaSrc]);
+  }, [activeMediaInput, mediaInputMode]);
 
   // Handle Play / Pause toggles
   useEffect(() => {
@@ -151,6 +158,11 @@ export function Player() {
   const handleLoadedMetadata = () => {
     if (!videoRef.current) return;
     setDuration(videoRef.current.duration);
+    setVideoResolution(
+      videoRef.current.videoWidth && videoRef.current.videoHeight
+        ? `${videoRef.current.videoWidth}×${videoRef.current.videoHeight}`
+        : "N/A"
+    );
     setPlayerError(null);
   };
 
@@ -198,18 +210,6 @@ export function Player() {
     if (path) {
       setLocalMediaPath(path);
       setMediaInputMode("local_file");
-      
-      try {
-        const playablePath = await invoke<string>("prepare_video_for_playback", { inputPath: path });
-        const converted = convertFileSrc(playablePath);
-        setMediaSrc(converted);
-        setPlayerError(null);
-      } catch (e: any) {
-        console.error("Failed to prepare file for playback:", e);
-        // Fallback for standard browser context (play via object stream URL)
-        setMediaSrc(URL.createObjectURL(file));
-        setPlayerError(null);
-      }
     } else {
       // Fallback for standard browser context (play via object stream URL)
       setLocalMediaPath(file.name);
@@ -228,11 +228,6 @@ export function Player() {
         if (filePath) {
           setLocalMediaPath(filePath);
           setMediaInputMode("local_file");
-          
-          const playablePath = await invoke<string>("prepare_video_for_playback", { inputPath: filePath });
-          const converted = convertFileSrc(playablePath);
-          setMediaSrc(converted);
-          setPlayerError(null);
           setIsPlaying(true);
         }
       } catch (e: any) {
@@ -268,12 +263,13 @@ export function Player() {
   };
 
   // Metadata properties
-  const isAudioFile = activeMediaInput.endsWith(".mp3") || activeMediaInput.endsWith(".wav");
+  const mediaExtension = activeMediaInput.split(".").pop()?.toUpperCase() || "VIDEO";
+  const isAudioFile = /\.(mp3|wav|m4a|flac)$/i.test(activeMediaInput);
   const metadata = {
-    format: isAudioFile ? "WAV / PCM" : "MP4 / H.265",
-    resolution: isAudioFile ? "N/A (Audio)" : duration > 0 ? "3840×2160" : "N/A",
-    audioTracks: "2 (EN, JP)",
-    size: activeMediaInput ? "4.2 GB" : "0.0 GB",
+    format: isAudioFile ? `${mediaExtension} / AUDIO` : `${mediaExtension} / AUTO`,
+    resolution: isAudioFile ? "N/A (Audio)" : videoResolution || "N/A",
+    audioTracks: "AUTO",
+    size: activeMediaInput ? "LOADED" : "0.0 GB",
   };
 
   const handleDownload = () => {
@@ -460,6 +456,18 @@ export function Player() {
                 <span className="font-extrabold text-sm text-cyan-300 tracking-widest text-glow uppercase">
                   Drop video file to play
                 </span>
+              </div>
+            )}
+
+            {isPreparingPlayback && (
+              <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center space-y-3 m-2 border border-cyan-500/30">
+                <span className="w-3 h-3 rounded-full bg-cyan-400 animate-ping" />
+                <span className="text-cyan-300 font-bold uppercase tracking-widest text-xs">
+                  Preparing Compatible Preview
+                </span>
+                <p className="text-xs text-cyan-100/80 max-w-[440px] leading-relaxed">
+                  正在将 AV1、H.265 或 MKV 视频转换为播放器兼容的 H.264 预览。首次打开较大的 4K 文件需要等待一段时间。
+                </p>
               </div>
             )}
 

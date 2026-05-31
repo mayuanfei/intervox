@@ -1,7 +1,7 @@
-use base64::Engine as _;
 use crate::asr::{AsrProviderId, BailianDeployment, TargetLanguageCode};
 use crate::credentials::{CredentialError, CredentialStore};
 use crate::translation::TranslationDocument;
+use base64::Engine as _;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
+
+const DEFAULT_VOLC_TTS_VOICE: &str = "zh_female_vv_uranus_bigtts";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TtsRequest {
@@ -46,6 +48,14 @@ pub struct TtsSegment {
     pub audio_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TtsProgress {
+    pub stage: String,
+    pub completed_segments: usize,
+    pub total_segments: usize,
+    pub progress: f32,
+}
+
 #[derive(Debug, Error)]
 pub enum TtsError {
     #[error("没有可配音的翻译内容。")]
@@ -64,19 +74,39 @@ pub enum TtsError {
     Credential(#[from] CredentialError),
 }
 
+#[allow(dead_code)]
 pub fn synthesize(
     request: TtsRequest,
     credentials: &CredentialStore,
 ) -> Result<TtsDocument, TtsError> {
+    synthesize_with_progress(request, credentials, |_| {})
+}
+
+pub fn synthesize_with_progress<F>(
+    request: TtsRequest,
+    credentials: &CredentialStore,
+    mut on_progress: F,
+) -> Result<TtsDocument, TtsError>
+where
+    F: FnMut(TtsProgress),
+{
     if request.translation.segments.is_empty() {
         return Err(TtsError::EmptyTranslation);
     }
+
+    let total_segments = request
+        .translation
+        .segments
+        .iter()
+        .filter(|segment| !segment.translated_text.trim().is_empty())
+        .count();
+    report_tts_progress(&mut on_progress, "started", 0, total_segments);
 
     let model_name = request.model.trim();
 
     // Route to Volcengine Doubao if the model matches
     if is_volc_model(model_name) {
-        return synthesize_volc(request, credentials);
+        return synthesize_volc(request, credentials, &mut on_progress, total_segments);
     }
 
     // --- Existing Aliyun path (unchanged) ---
@@ -101,9 +131,10 @@ pub fn synthesize(
 
     let model = if request.model.trim() == "cosyvoice-v3-clone" {
         // Zero-shot voice cloning
-        let video_path = request.original_video_path.as_deref().ok_or_else(|| {
-            TtsError::Api("进行声音克隆时必须提供原视频路径。".to_string())
-        })?;
+        let video_path = request
+            .original_video_path
+            .as_deref()
+            .ok_or_else(|| TtsError::Api("进行声音克隆时必须提供原视频路径。".to_string()))?;
 
         // 1. Extract 15s human voice slice
         let temp_slice = extract_slice_to_temp(video_path)
@@ -111,17 +142,12 @@ pub fn synthesize(
 
         // 2. Upload to DashScope OSS & enroll
         let upload_result = (|| -> Result<String, TtsError> {
-            let policy = crate::asr::get_dashscope_upload_policy(
-                &client,
-                &api_key,
-                "cosyvoice-v3-flash",
-            ).map_err(|e| TtsError::Api(format!("获取上传凭据失败：{e}")))?;
+            let policy =
+                crate::asr::get_dashscope_upload_policy(&client, &api_key, "cosyvoice-v3-flash")
+                    .map_err(|e| TtsError::Api(format!("获取上传凭据失败：{e}")))?;
 
-            let oss_url = crate::asr::upload_file_to_dashscope_oss(
-                &client,
-                &policy,
-                &temp_slice,
-            ).map_err(|e| TtsError::Api(format!("上传克隆音频失败：{e}")))?;
+            let oss_url = crate::asr::upload_file_to_dashscope_oss(&client, &policy, &temp_slice)
+                .map_err(|e| TtsError::Api(format!("上传克隆音频失败：{e}")))?;
 
             enroll_voice(&client, &api_key, &oss_url)
         })();
@@ -174,22 +200,18 @@ pub fn synthesize(
         let mut last_err = None;
         for attempt in 1..=5 {
             match client.get(&download_url).send() {
-                Ok(resp) => {
-                    match resp.error_for_status() {
-                        Ok(success_resp) => {
-                            match success_resp.bytes() {
-                                Ok(bytes) => {
-                                    audio_bytes = Some(bytes);
-                                    break;
-                                }
-                                Err(e) => last_err = Some(TtsError::Http(e)),
-                            }
+                Ok(resp) => match resp.error_for_status() {
+                    Ok(success_resp) => match success_resp.bytes() {
+                        Ok(bytes) => {
+                            audio_bytes = Some(bytes);
+                            break;
                         }
-                        Err(e) => {
-                            last_err = Some(TtsError::Http(e));
-                        }
+                        Err(e) => last_err = Some(TtsError::Http(e)),
+                    },
+                    Err(e) => {
+                        last_err = Some(TtsError::Http(e));
                     }
-                }
+                },
                 Err(e) => {
                     last_err = Some(TtsError::Http(e));
                 }
@@ -201,7 +223,8 @@ pub fn synthesize(
         let audio_bytes = match audio_bytes {
             Some(bytes) => bytes,
             None => {
-                let err = last_err.unwrap_or_else(|| TtsError::Api("下载音频失败，重试次数超限".to_string()));
+                let err = last_err
+                    .unwrap_or_else(|| TtsError::Api("下载音频失败，重试次数超限".to_string()));
                 return Err(err);
             }
         };
@@ -217,11 +240,24 @@ pub fn synthesize(
             audio_url,
             audio_path: audio_path.to_string_lossy().to_string(),
         });
+        report_tts_progress(
+            &mut on_progress,
+            "segment_completed",
+            segments.len(),
+            total_segments,
+        );
     }
 
     if segments.is_empty() {
         return Err(TtsError::EmptyTranslation);
     }
+
+    report_tts_progress(
+        &mut on_progress,
+        "completed",
+        segments.len(),
+        total_segments,
+    );
 
     Ok(TtsDocument {
         target_language: request.translation.target_language,
@@ -232,23 +268,32 @@ pub fn synthesize(
     })
 }
 
-fn synthesize_volc(
+fn synthesize_volc<F>(
     request: TtsRequest,
     credentials: &CredentialStore,
-) -> Result<TtsDocument, TtsError> {
+    on_progress: &mut F,
+    total_segments: usize,
+) -> Result<TtsDocument, TtsError>
+where
+    F: FnMut(TtsProgress),
+{
     let api_key = credentials
         .get(AsrProviderId::VolcDoubao)?
         .ok_or(TtsError::MissingCredential)?;
 
     let app_id = request.app_id.clone().unwrap_or_default();
     if app_id.trim().is_empty() {
-        return Err(TtsError::Api("请先在设置中填入火山引擎 App ID。".to_string()));
+        return Err(TtsError::Api(
+            "请先在设置中填入火山引擎 App ID。".to_string(),
+        ));
     }
 
     let output_dir = resolve_output_dir(request.output_dir.as_deref())?;
     fs::create_dir_all(&output_dir)?;
 
-    let client = Client::builder().timeout(Duration::from_secs(120)).build()?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()?;
 
     let model_name = request.model.trim().to_string();
     let is_clone = model_name.contains("icl") || model_name.contains("clone");
@@ -267,11 +312,15 @@ fn synthesize_volc(
         speaker_id?
     } else {
         // Standard synthesis: use the voice preset or default
-        if request.voice.trim().is_empty() {
-            "zh_female_vv_uranus_bigtts".to_string()
-        } else {
-            request.voice.trim().to_string()
+        let voice_type = normalize_volc_tts_voice(&request.voice);
+        if voice_type != request.voice.trim() {
+            eprintln!(
+                "[TTS-Volc] 音色 {} 不适用于 Seed-TTS 2.0，回退为 {}",
+                request.voice.trim(),
+                voice_type
+            );
         }
+        voice_type.to_string()
     };
 
     let default_resource_id = default_volc_tts_resource_id(is_clone, &voice_type);
@@ -308,11 +357,19 @@ fn synthesize_volc(
             audio_url: String::new(),
             audio_path: audio_path.to_string_lossy().to_string(),
         });
+        report_tts_progress(
+            on_progress,
+            "segment_completed",
+            segments.len(),
+            total_segments,
+        );
     }
 
     if segments.is_empty() {
         return Err(TtsError::EmptyTranslation);
     }
+
+    report_tts_progress(on_progress, "completed", segments.len(), total_segments);
 
     Ok(TtsDocument {
         target_language: request.translation.target_language,
@@ -321,6 +378,36 @@ fn synthesize_volc(
         voice: voice_type,
         segments,
     })
+}
+
+fn report_tts_progress<F>(
+    on_progress: &mut F,
+    stage: &str,
+    completed_segments: usize,
+    total_segments: usize,
+) where
+    F: FnMut(TtsProgress),
+{
+    let progress = if total_segments == 0 {
+        0.0
+    } else {
+        completed_segments as f32 / total_segments as f32
+    };
+    on_progress(TtsProgress {
+        stage: stage.to_string(),
+        completed_segments,
+        total_segments,
+        progress,
+    });
+}
+
+fn normalize_volc_tts_voice(voice_type: &str) -> &str {
+    match voice_type.trim() {
+        "" | "zh_female_common" => DEFAULT_VOLC_TTS_VOICE,
+        "zh_female_story" => "zh_female_xiaohe_uranus_bigtts",
+        "zh_male_common" => "zh_male_m191_uranus_bigtts",
+        voice_type => voice_type,
+    }
 }
 
 fn default_volc_tts_resource_id(is_clone: bool, voice_type: &str) -> &'static str {
@@ -395,49 +482,51 @@ fn extract_slice_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, S
     let temp_dir = dir.join("exports").join("temp_audio");
     std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
-    let output_audio_path = temp_dir.join(format!(
-        "temp_clone_{}.mp3",
-        uuid::Uuid::new_v4()
-    ));
+    let output_audio_path = temp_dir.join(format!("temp_clone_{}.mp3", uuid::Uuid::new_v4()));
 
     let mut cmd = std::process::Command::new(crate::export::ffmpeg_path());
     cmd.arg("-y")
-       .arg("-ss")
-       .arg("5")
-       .arg("-i")
-       .arg(input_video_path)
-       .arg("-t")
-       .arg("15")
-       .arg("-vn")
-       .arg("-c:a")
-       .arg("libmp3lame")
-       .arg("-ar")
-       .arg("16000")
-       .arg("-ac")
-       .arg("1")
-       .arg("-b:a")
-       .arg("64k")
-       .arg(&output_audio_path);
+        .arg("-ss")
+        .arg("5")
+        .arg("-i")
+        .arg(input_video_path)
+        .arg("-t")
+        .arg("15")
+        .arg("-vn")
+        .arg("-c:a")
+        .arg("libmp3lame")
+        .arg("-ar")
+        .arg("16000")
+        .arg("-ac")
+        .arg("1")
+        .arg("-b:a")
+        .arg("64k")
+        .arg(&output_audio_path);
 
-    let output = cmd.output().map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
+    let output = cmd
+        .output()
+        .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
     if !output.status.success() {
         let mut fallback_cmd = std::process::Command::new(crate::export::ffmpeg_path());
-        fallback_cmd.arg("-y")
-                    .arg("-i")
-                    .arg(input_video_path)
-                    .arg("-t")
-                    .arg("15")
-                    .arg("-vn")
-                    .arg("-c:a")
-                    .arg("libmp3lame")
-                    .arg("-ar")
-                    .arg("16000")
-                    .arg("-ac")
-                    .arg("1")
-                    .arg("-b:a")
-                    .arg("64k")
-                    .arg(&output_audio_path);
-        let fallback_output = fallback_cmd.output().map_err(|_| "找不到 ffmpeg。".to_string())?;
+        fallback_cmd
+            .arg("-y")
+            .arg("-i")
+            .arg(input_video_path)
+            .arg("-t")
+            .arg("15")
+            .arg("-vn")
+            .arg("-c:a")
+            .arg("libmp3lame")
+            .arg("-ar")
+            .arg("16000")
+            .arg("-ac")
+            .arg("1")
+            .arg("-b:a")
+            .arg("64k")
+            .arg(&output_audio_path);
+        let fallback_output = fallback_cmd
+            .output()
+            .map_err(|_| "找不到 ffmpeg。".to_string())?;
         if !fallback_output.status.success() {
             let err_msg = String::from_utf8_lossy(&fallback_output.stderr).to_string();
             return Err(format!("克隆音源提取失败：{err_msg}"));
@@ -447,11 +536,7 @@ fn extract_slice_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, S
     Ok(output_audio_path)
 }
 
-fn enroll_voice(
-    client: &Client,
-    api_key: &str,
-    oss_url: &str,
-) -> Result<String, TtsError> {
+fn enroll_voice(client: &Client, api_key: &str, oss_url: &str) -> Result<String, TtsError> {
     let url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization";
     let payload = json!({
         "model": "voice-enrollment",
@@ -474,7 +559,10 @@ fn enroll_voice(
     if !response.status().is_success() {
         let status = response.status();
         let err_text = response.text().unwrap_or_default();
-        return Err(TtsError::Api(format!("百炼声纹注册失败 (HTTP {}): {}", status, err_text)));
+        return Err(TtsError::Api(format!(
+            "百炼声纹注册失败 (HTTP {}): {}",
+            status, err_text
+        )));
     }
 
     let response_json = response.json::<Value>()?;
@@ -483,7 +571,11 @@ fn enroll_voice(
         .pointer("/output/voice_id")
         .and_then(Value::as_str)
         .map(ToString::to_string)
-        .ok_or_else(|| TtsError::Api(format!("声音复刻创建失败，未返回 voice_id：{response_json}")))
+        .ok_or_else(|| {
+            TtsError::Api(format!(
+                "声音复刻创建失败，未返回 voice_id：{response_json}"
+            ))
+        })
 }
 
 fn enroll_volc_voice(
@@ -522,7 +614,10 @@ fn enroll_volc_voice(
     if !response.status().is_success() {
         let status = response.status();
         let err_text = response.text().unwrap_or_default();
-        return Err(TtsError::Api(format!("火山引擎声音复刻上传失败 (HTTP {}): {}", status, err_text)));
+        return Err(TtsError::Api(format!(
+            "火山引擎声音复刻上传失败 (HTTP {}): {}",
+            status, err_text
+        )));
     }
 
     let _resp_json = response.json::<Value>()?;
@@ -564,7 +659,10 @@ fn synthesize_segment(
     if !response.status().is_success() {
         let status = response.status();
         let err_text = response.text().unwrap_or_default();
-        return Err(TtsError::Api(format!("百炼语音合成失败 (HTTP {}): {}", status, err_text)));
+        return Err(TtsError::Api(format!(
+            "百炼语音合成失败 (HTTP {}): {}",
+            status, err_text
+        )));
     }
 
     let response_json = response.json::<Value>()?;
@@ -598,7 +696,10 @@ fn synthesize_volc_segment(
     if !response.status().is_success() {
         let status = response.status();
         let err_text = response.text().unwrap_or_default();
-        return Err(TtsError::Api(format!("火山引擎 TTS 合成失败 (HTTP {}): {}", status, err_text)));
+        return Err(TtsError::Api(format!(
+            "火山引擎 TTS 合成失败 (HTTP {}): {}",
+            status, err_text
+        )));
     }
 
     // Read response as raw bytes first (official V3 returns chunked binary audio)
@@ -680,7 +781,11 @@ fn parse_volc_stream_objects(body: &str) -> Vec<Value> {
 
     body.lines()
         .filter_map(|line| {
-            let line = line.trim().strip_prefix("data:").unwrap_or(line.trim()).trim();
+            let line = line
+                .trim()
+                .strip_prefix("data:")
+                .unwrap_or(line.trim())
+                .trim();
             if line.is_empty() {
                 None
             } else {
@@ -694,12 +799,20 @@ fn volc_stream_error_detail(stream_objects: &[Value], body: &str) -> String {
     let mut server_errors = Vec::new();
     for obj in stream_objects {
         if let Some(code) = obj.get("code").or_else(|| obj.get("error_code")) {
-            if let Some(msg) = obj.get("message").or_else(|| obj.get("err_msg")).or_else(|| obj.get("error")) {
+            if let Some(msg) = obj
+                .get("message")
+                .or_else(|| obj.get("err_msg"))
+                .or_else(|| obj.get("error"))
+            {
                 server_errors.push(format!("错误码 {}: {}", code, msg));
             } else {
                 server_errors.push(format!("错误码 {}", code));
             }
-        } else if let Some(msg) = obj.get("message").or_else(|| obj.get("err_msg")).or_else(|| obj.get("error")) {
+        } else if let Some(msg) = obj
+            .get("message")
+            .or_else(|| obj.get("err_msg"))
+            .or_else(|| obj.get("error"))
+        {
             server_errors.push(msg.to_string());
         }
     }
@@ -709,7 +822,11 @@ fn volc_stream_error_detail(stream_objects: &[Value], body: &str) -> String {
     } else {
         let trimmed_body = body.trim();
         if !trimmed_body.is_empty() {
-            let limit = trimmed_body.char_indices().map(|(i, _)| i).nth(200).unwrap_or(trimmed_body.len());
+            let limit = trimmed_body
+                .char_indices()
+                .map(|(i, _)| i)
+                .nth(200)
+                .unwrap_or(trimmed_body.len());
             format!("原始响应：{}", &trimmed_body[..limit])
         } else {
             "响应为空".to_string()
@@ -727,9 +844,7 @@ fn resolve_output_dir(output_dir: Option<&str>) -> Result<PathBuf, std::io::Erro
         dir.pop();
     }
 
-    Ok(dir
-        .join("exports")
-        .join(format!("tts_{}", Uuid::new_v4())))
+    Ok(dir.join("exports").join(format!("tts_{}", Uuid::new_v4())))
 }
 
 fn sanitize_file_id(id: &str) -> String {
@@ -767,7 +882,9 @@ fn is_volc_model(model: &str) -> bool {
 }
 
 #[allow(dead_code)]
-fn ensure_translation_has_text(translation: &crate::translation::TranslationDocument) -> Result<(), TtsError> {
+fn ensure_translation_has_text(
+    translation: &crate::translation::TranslationDocument,
+) -> Result<(), TtsError> {
     let empty_ids: Vec<&str> = translation
         .segments
         .iter()
@@ -777,7 +894,12 @@ fn ensure_translation_has_text(translation: &crate::translation::TranslationDocu
     if empty_ids.is_empty() {
         return Ok(());
     }
-    let preview = empty_ids.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+    let preview = empty_ids
+        .iter()
+        .take(5)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
     Err(TtsError::Api(format!("以下段落翻译文本为空：{preview}")))
 }
 
@@ -856,15 +978,51 @@ mod tests {
     }
 
     #[test]
+    fn maps_legacy_volc_voice_to_seed_tts2_default() {
+        let voice_type = normalize_volc_tts_voice("zh_male_common");
+
+        assert_eq!(voice_type, "zh_male_m191_uranus_bigtts");
+        assert_eq!(
+            default_volc_tts_resource_id(false, voice_type),
+            "seed-tts-2.0"
+        );
+    }
+
+    #[test]
+    fn reports_tts_segment_progress() {
+        let mut progress_events = Vec::new();
+
+        report_tts_progress(
+            &mut |progress| progress_events.push(progress),
+            "segment_completed",
+            2,
+            4,
+        );
+
+        assert_eq!(progress_events.len(), 1);
+        assert_eq!(progress_events[0].stage, "segment_completed");
+        assert_eq!(progress_events[0].completed_segments, 2);
+        assert_eq!(progress_events[0].total_segments, 4);
+        assert_eq!(progress_events[0].progress, 0.5);
+    }
+
+    #[test]
     fn builds_volc_v3_payload_with_req_params_speaker() {
-        let payload = build_volc_tts_payload("test-app-id", "zh_male_m191_uranus_bigtts", "你好", "test-req-id");
+        let payload = build_volc_tts_payload(
+            "test-app-id",
+            "zh_male_m191_uranus_bigtts",
+            "你好",
+            "test-req-id",
+        );
 
         assert_eq!(
             payload.pointer("/app/appid").and_then(Value::as_str),
             Some("test-app-id")
         );
         assert_eq!(
-            payload.pointer("/req_params/speaker").and_then(Value::as_str),
+            payload
+                .pointer("/req_params/speaker")
+                .and_then(Value::as_str),
             Some("zh_male_m191_uranus_bigtts")
         );
         assert_eq!(
@@ -876,17 +1034,23 @@ mod tests {
             Some("你好")
         );
         assert_eq!(
-            payload.pointer("/req_params/audio_params/format").and_then(Value::as_str),
+            payload
+                .pointer("/req_params/audio_params/format")
+                .and_then(Value::as_str),
             Some("wav")
         );
     }
 
     #[test]
     fn parses_concatenated_volc_json_stream() {
-        let objects = parse_volc_stream_objects(r#"{"data":"YQ=="}{"code":20000000,"message":"ok"}"#);
+        let objects =
+            parse_volc_stream_objects(r#"{"data":"YQ=="}{"code":20000000,"message":"ok"}"#);
 
         assert_eq!(objects.len(), 2);
         assert_eq!(objects[0].get("data").and_then(Value::as_str), Some("YQ=="));
-        assert_eq!(objects[1].get("code").and_then(Value::as_i64), Some(20000000));
+        assert_eq!(
+            objects[1].get("code").and_then(Value::as_i64),
+            Some(20000000)
+        );
     }
 }

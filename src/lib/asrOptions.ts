@@ -143,8 +143,7 @@ export const BAILIAN_TTS_VOICE_OPTIONS = [
 
 // Volcengine Doubao Translation Model Options
 export const DOUBAO_TRANSLATION_MODEL_OPTIONS = [
-  { value: "ep-20260528-doubao-pro", label: "Doubao-Pro (高质量推荐)" },
-  { value: "ep-20260528-doubao-lite", label: "Doubao-Lite (极速低成本)" },
+  { value: "volc-speech-mt", label: "火山机器翻译 (Volc Speech MT - 推荐)" },
 ];
 
 // Volcengine Doubao TTS Model Options
@@ -159,7 +158,4 @@ export const DOUBAO_TTS_VOICE_OPTIONS = [
   { value: "zh_male_m191_uranus_bigtts", label: "云舟 清爽沉稳男声 (Uranus - 2.0)" },
   { value: "zh_female_xiaohe_uranus_bigtts", label: "小何 亲切自然女声 (Uranus - 2.0)" },
   { value: "en_male_tim_uranus_bigtts", label: "Tim 英文男声 (Uranus - 2.0)" },
-  { value: "zh_female_story", label: "温润女声 (Story - 1.0)" },
-  { value: "zh_female_common", label: "标准女声 (Common - 1.0)" },
-  { value: "zh_male_common", label: "标准男声 (Common - 1.0)" },
 ];

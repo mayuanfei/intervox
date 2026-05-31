@@ -6,9 +6,58 @@ use serde_json::{json, Value};
 use std::error::Error as StdError;
 use std::time::Duration;
 use thiserror::Error;
+use uuid::Uuid;
 
-const TRANSLATION_BATCH_SIZE: usize = 20;
+const LLM_TRANSLATION_BATCH_SIZE: usize = 20;
+const VOLC_SPEECH_MT_BATCH_SIZE: usize = 16;
 const TRANSLATION_TIMEOUT_SECS: u64 = 180;
+const VOLC_SPEECH_MT_URL: &str =
+    "https://openspeech.bytedance.com/api/v3/machine_translation/matx_translate";
+const VOLC_SPEECH_MT_RESOURCE_ID: &str = "volc.speech.mt";
+const VOLC_SPEECH_MT_SUCCESS_CODE: i64 = 20_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TranslationBackend {
+    AliyunQwen,
+    VolcArk,
+    VolcSpeechMt,
+}
+
+impl TranslationBackend {
+    fn from_model(model: &str) -> Self {
+        let model = model.trim();
+        if model == "volc-speech-mt" {
+            Self::VolcSpeechMt
+        } else if model.to_lowercase().contains("doubao") || model.starts_with("ep-") {
+            Self::VolcArk
+        } else {
+            Self::AliyunQwen
+        }
+    }
+
+    fn credential_provider(self) -> AsrProviderId {
+        match self {
+            Self::AliyunQwen => AsrProviderId::AliyunBailian,
+            Self::VolcArk => AsrProviderId::VolcArk,
+            Self::VolcSpeechMt => AsrProviderId::VolcDoubao,
+        }
+    }
+
+    fn batch_size(self) -> usize {
+        match self {
+            Self::VolcSpeechMt => VOLC_SPEECH_MT_BATCH_SIZE,
+            Self::AliyunQwen | Self::VolcArk => LLM_TRANSLATION_BATCH_SIZE,
+        }
+    }
+
+    fn document_provider(self) -> &'static str {
+        match self {
+            Self::AliyunQwen => "aliyun_qwen",
+            Self::VolcArk => "volc_ark",
+            Self::VolcSpeechMt => "volc_speech_mt",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TranslationRequest {
@@ -79,18 +128,11 @@ where
         return Err(TranslationError::EmptyTranscript);
     }
 
-    let model_name = request.model.trim();
-    let is_doubao = model_name.to_lowercase().contains("doubao") || model_name.starts_with("ep-");
-
-    let api_key = if is_doubao {
-        credentials
-            .get(AsrProviderId::VolcArk)?
-            .ok_or(TranslationError::MissingCredential)?
-    } else {
-        credentials
-            .get(AsrProviderId::AliyunBailian)?
-            .ok_or(TranslationError::MissingCredential)?
-    };
+    let backend = TranslationBackend::from_model(&request.model);
+    let batch_size = backend.batch_size();
+    let api_key = credentials
+        .get(backend.credential_provider())?
+        .ok_or(TranslationError::MissingCredential)?;
 
     let client = Client::builder()
         .timeout(Duration::from_secs(TRANSLATION_TIMEOUT_SECS))
@@ -98,7 +140,7 @@ where
         .map_err(http_error)?;
 
     let total_segments = request.transcript.segments.len();
-    let total_batches = total_segments.div_ceil(TRANSLATION_BATCH_SIZE);
+    let total_batches = total_segments.div_ceil(batch_size);
     let mut segments = Vec::with_capacity(total_segments);
     on_progress(TranslationProgress {
         stage: "started".to_string(),
@@ -109,12 +151,7 @@ where
         progress: 0.0,
     });
 
-    for (batch_index, batch) in request
-        .transcript
-        .segments
-        .chunks(TRANSLATION_BATCH_SIZE)
-        .enumerate()
-    {
+    for (batch_index, batch) in request.transcript.segments.chunks(batch_size).enumerate() {
         let batch_request = TranslationRequest {
             transcript: TranscriptDocument {
                 source_language: request.transcript.source_language.clone(),
@@ -125,7 +162,7 @@ where
             model: request.model.clone(),
             deployment: request.deployment.clone(),
         };
-        let response = request_translation_batch(&client, &api_key, &batch_request)?;
+        let response = request_translation_batch(&client, &api_key, &batch_request, backend)?;
         let batch_document = parse_translation_response(&batch_request, &response);
         ensure_translation_complete(&batch_document)?;
         segments.extend(batch_document.segments);
@@ -150,13 +187,10 @@ where
         progress: 1.0,
     });
 
-    let model_name_lower = request.model.to_lowercase();
-    let is_doubao_model = model_name_lower.contains("doubao") || request.model.starts_with("ep-");
-
     Ok(TranslationDocument {
         source_language: format!("{:?}", request.transcript.source_language),
         target_language: request.transcript.target_language,
-        provider: if is_doubao_model { "volc_doubao".to_string() } else { "aliyun_qwen".to_string() },
+        provider: backend.document_provider().to_string(),
         segments,
     })
 }
@@ -182,7 +216,7 @@ fn ensure_translation_complete(document: &TranslationDocument) -> Result<(), Tra
     let suffix = if missing_ids.len() > 8 { " ..." } else { "" };
 
     Err(TranslationError::Api(format!(
-        "百炼翻译结果不完整，缺少 {}/{} 段：{preview}{suffix}。请重新翻译，避免生成错位视频。",
+        "翻译结果不完整，缺少 {}/{} 段：{preview}{suffix}。请重新翻译，避免生成错位视频。",
         missing_ids.len(),
         document.segments.len()
     )))
@@ -207,11 +241,26 @@ fn request_translation_batch(
     client: &Client,
     api_key: &str,
     request: &TranslationRequest,
+    backend: TranslationBackend,
+) -> Result<Value, TranslationError> {
+    match backend {
+        TranslationBackend::VolcSpeechMt => request_volc_speech_mt_batch(client, api_key, request),
+        TranslationBackend::AliyunQwen | TranslationBackend::VolcArk => {
+            request_llm_translation_batch(client, api_key, request, backend)
+        }
+    }
+}
+
+fn request_llm_translation_batch(
+    client: &Client,
+    api_key: &str,
+    request: &TranslationRequest,
+    backend: TranslationBackend,
 ) -> Result<Value, TranslationError> {
     let model_name = request.model.trim();
-    let is_doubao = model_name.to_lowercase().contains("doubao") || model_name.starts_with("ep-");
-    
-    let url = if is_doubao {
+    let is_volc_ark = backend == TranslationBackend::VolcArk;
+
+    let url = if is_volc_ark {
         "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
     } else {
         request.deployment.compatible_chat_url()
@@ -232,9 +281,12 @@ fn request_translation_batch(
         "temperature": 0.2
     });
 
-    if !is_doubao {
+    if !is_volc_ark {
         if let Some(obj) = payload.as_object_mut() {
-            obj.insert("response_format".to_string(), json!({ "type": "json_object" }));
+            obj.insert(
+                "response_format".to_string(),
+                json!({ "type": "json_object" }),
+            );
         }
     }
 
@@ -265,12 +317,133 @@ fn request_translation_batch(
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
         .ok_or_else(|| TranslationError::Api(format!("未返回 message.content：{response}")))?;
-        
+
     let cleaned = clean_json_content(content);
-    let content_json: Value = serde_json::from_str(cleaned)
-        .map_err(|error| TranslationError::Api(format!("JSON解析失败: {error}; 原始文本: {content}")))?;
+    let content_json: Value = serde_json::from_str(cleaned).map_err(|error| {
+        TranslationError::Api(format!("JSON解析失败: {error}; 原始文本: {content}"))
+    })?;
 
     Ok(content_json)
+}
+
+fn build_volc_speech_mt_payload(request: &TranslationRequest) -> Value {
+    let mut payload = json!({
+        "target_language": request.transcript.target_language.as_volc_speech_mt_language(),
+        "text_list": request
+            .transcript
+            .segments
+            .iter()
+            .map(|segment| segment.text.clone())
+            .collect::<Vec<_>>(),
+    });
+
+    if let Some(source_language) = request
+        .transcript
+        .source_language
+        .as_volc_speech_mt_language()
+    {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("source_language".to_string(), json!(source_language));
+        }
+    }
+
+    payload
+}
+
+fn request_volc_speech_mt_batch(
+    client: &Client,
+    api_key: &str,
+    request: &TranslationRequest,
+) -> Result<Value, TranslationError> {
+    let response = client
+        .post(VOLC_SPEECH_MT_URL)
+        .header("X-Api-Key", api_key)
+        .header("X-Api-Resource-Id", VOLC_SPEECH_MT_RESOURCE_ID)
+        .header("X-Api-Request-Id", Uuid::new_v4().to_string())
+        .header("Content-Type", "application/json")
+        .json(&build_volc_speech_mt_payload(request))
+        .send()
+        .map_err(http_error)?;
+    let status = response.status();
+    let response_text = response.text().map_err(http_error)?;
+
+    if !status.is_success() {
+        return Err(TranslationError::Api(format!(
+            "火山机器翻译失败 (HTTP {status})：{}",
+            truncate_for_error(&response_text)
+        )));
+    }
+
+    let response: Value = serde_json::from_str(&response_text).map_err(|error| {
+        TranslationError::Api(format!(
+            "火山机器翻译响应不是 JSON：{error}；原始响应：{}",
+            truncate_for_error(&response_text)
+        ))
+    })?;
+
+    parse_volc_speech_mt_response(request, &response)
+}
+
+fn parse_volc_speech_mt_response(
+    request: &TranslationRequest,
+    response: &Value,
+) -> Result<Value, TranslationError> {
+    let code = response
+        .get("code")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            TranslationError::Api(format!("火山机器翻译响应缺少业务状态码：{response}"))
+        })?;
+
+    if code != VOLC_SPEECH_MT_SUCCESS_CODE {
+        let message = response
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("未知错误");
+        return Err(TranslationError::Api(format!(
+            "火山机器翻译失败：{code} {message}"
+        )));
+    }
+
+    let translations = response
+        .pointer("/data/translation_list")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            TranslationError::Api(format!("火山机器翻译响应缺少 translation_list：{response}"))
+        })?;
+
+    if translations.len() != request.transcript.segments.len() {
+        return Err(TranslationError::Api(format!(
+            "火山机器翻译结果数量不匹配：请求 {} 段，返回 {} 段。请重新翻译，避免生成错位视频。",
+            request.transcript.segments.len(),
+            translations.len()
+        )));
+    }
+
+    let segments = request
+        .transcript
+        .segments
+        .iter()
+        .zip(translations)
+        .map(|(segment, translation)| {
+            let translated_text = translation
+                .get("translation")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    TranslationError::Api(format!(
+                        "火山机器翻译结果缺少译文，段落 ID：{}。",
+                        segment.id
+                    ))
+                })?;
+
+            Ok(json!({
+                "id": segment.id,
+                "translated_text": translated_text,
+            }))
+        })
+        .collect::<Result<Vec<_>, TranslationError>>()?;
+
+    Ok(json!({ "segments": segments }))
 }
 
 fn http_error(error: reqwest::Error) -> TranslationError {
@@ -376,6 +549,121 @@ mod tests {
     use super::*;
     use crate::asr::{AsrProviderId, SourceLanguageCode, TargetLanguageCode, TranscriptSegment};
 
+    fn volc_speech_request(
+        source_language: SourceLanguageCode,
+        texts: &[&str],
+    ) -> TranslationRequest {
+        TranslationRequest {
+            transcript: TranscriptDocument {
+                source_language,
+                target_language: TargetLanguageCode::ZhHansCn,
+                provider: AsrProviderId::VolcDoubao,
+                segments: texts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, text)| TranscriptSegment {
+                        id: format!("seg_{index}"),
+                        start_ms: index as u64 * 1000,
+                        end_ms: (index as u64 + 1) * 1000,
+                        speaker_id: None,
+                        text: (*text).to_string(),
+                        confidence: None,
+                    })
+                    .collect(),
+            },
+            model: "volc-speech-mt".to_string(),
+            deployment: BailianDeployment::ChinaMainland,
+        }
+    }
+
+    #[test]
+    fn volc_speech_mt_uses_speech_credential_and_batch_limit() {
+        let backend = TranslationBackend::from_model("volc-speech-mt");
+
+        assert_eq!(backend, TranslationBackend::VolcSpeechMt);
+        assert_eq!(backend.credential_provider(), AsrProviderId::VolcDoubao);
+        assert_eq!(backend.batch_size(), 16);
+    }
+
+    #[test]
+    fn volc_speech_mt_payload_uses_language_codes_and_text_list() {
+        let request = volc_speech_request(SourceLanguageCode::EnUs, &["Hello", "World"]);
+
+        assert_eq!(
+            build_volc_speech_mt_payload(&request),
+            json!({
+                "source_language": "en",
+                "target_language": "zh",
+                "text_list": ["Hello", "World"],
+            })
+        );
+    }
+
+    #[test]
+    fn volc_speech_mt_payload_omits_auto_source_language() {
+        let request = volc_speech_request(SourceLanguageCode::Auto, &["Hello"]);
+        let payload = build_volc_speech_mt_payload(&request);
+
+        assert_eq!(payload.get("source_language"), None);
+        assert_eq!(payload["target_language"], "zh");
+    }
+
+    #[test]
+    fn volc_speech_mt_response_maps_translations_by_order() {
+        let request = volc_speech_request(SourceLanguageCode::EnUs, &["Hello", "World"]);
+        let response = json!({
+            "code": 20000000,
+            "message": "ok",
+            "data": {
+                "translation_list": [
+                    { "translation": "你好" },
+                    { "translation": "世界" },
+                ]
+            }
+        });
+
+        let response = parse_volc_speech_mt_response(&request, &response).unwrap();
+        let document = parse_translation_response(&request, &response);
+
+        assert_eq!(document.segments[0].id, "seg_0");
+        assert_eq!(document.segments[0].translated_text, "你好");
+        assert_eq!(document.segments[1].id, "seg_1");
+        assert_eq!(document.segments[1].translated_text, "世界");
+    }
+
+    #[test]
+    fn volc_speech_mt_response_rejects_mismatched_translation_count() {
+        let request = volc_speech_request(SourceLanguageCode::EnUs, &["Hello", "World"]);
+        let response = json!({
+            "code": 20000000,
+            "message": "ok",
+            "data": {
+                "translation_list": [{ "translation": "你好" }]
+            }
+        });
+
+        let error = parse_volc_speech_mt_response(&request, &response)
+            .expect_err("mismatched response count should fail");
+
+        assert!(error.to_string().contains("请求 2 段，返回 1 段"));
+    }
+
+    #[test]
+    fn volc_speech_mt_response_rejects_business_error() {
+        let request = volc_speech_request(SourceLanguageCode::EnUs, &["Hello"]);
+        let response = json!({
+            "code": 45000001,
+            "message": "target_language is required"
+        });
+
+        let error = parse_volc_speech_mt_response(&request, &response)
+            .expect_err("business error should fail");
+
+        assert!(error
+            .to_string()
+            .contains("45000001 target_language is required"));
+    }
+
     #[test]
     fn parser_maps_translated_text_by_segment_id() {
         let request = TranslationRequest {
@@ -445,7 +733,8 @@ mod tests {
         });
 
         let document = parse_translation_response(&request, &response);
-        let error = ensure_translation_complete(&document).expect_err("missing segment should fail");
+        let error =
+            ensure_translation_complete(&document).expect_err("missing segment should fail");
 
         assert!(error.to_string().contains("seg_2"));
     }

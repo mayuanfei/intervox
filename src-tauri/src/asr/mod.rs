@@ -1,5 +1,5 @@
-use base64::Engine as _;
 use crate::credentials::{CredentialError, CredentialStore};
+use base64::Engine as _;
 use reqwest::blocking::Client;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -65,6 +65,16 @@ impl SourceLanguageCode {
             _ => None,
         }
     }
+
+    pub fn as_volc_speech_mt_language(&self) -> Option<&'static str> {
+        match self {
+            SourceLanguageCode::Auto => None,
+            SourceLanguageCode::EnUs => Some("en"),
+            SourceLanguageCode::JaJp => Some("ja"),
+            SourceLanguageCode::KoKr => Some("ko"),
+            SourceLanguageCode::CmnHansCn => Some("zh"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -97,8 +107,19 @@ impl TargetLanguageCode {
             TargetLanguageCode::DeDe => "德语",
         }
     }
-}
 
+    pub fn as_volc_speech_mt_language(&self) -> &'static str {
+        match self {
+            TargetLanguageCode::ZhHansCn => "zh",
+            TargetLanguageCode::EnUs => "en",
+            TargetLanguageCode::JaJp => "ja",
+            TargetLanguageCode::KoKr => "ko",
+            TargetLanguageCode::EsEs => "es",
+            TargetLanguageCode::FrFr => "fr",
+            TargetLanguageCode::DeDe => "de",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -420,7 +441,8 @@ impl AsrProvider for AliyunBailianProvider {
             .ok_or(AsrError::MissingCredential)?;
         let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
-        let is_public_url = request.audio_path.starts_with("http://") || request.audio_path.starts_with("https://");
+        let is_public_url =
+            request.audio_path.starts_with("http://") || request.audio_path.starts_with("https://");
 
         let file_url = if is_public_url {
             validate_public_media_url(&request.audio_path)?.to_string()
@@ -710,7 +732,9 @@ impl AsrProvider for VolcDoubaoProvider {
         let api_key = CredentialStore::default()
             .get(self.id())?
             .ok_or(AsrError::MissingCredential)?;
-        let client = Client::builder().timeout(Duration::from_secs(180)).build()?;
+        let client = Client::builder()
+            .timeout(Duration::from_secs(180))
+            .build()?;
         let resource_id = request.config.volc_doubao.resource_id.trim();
         let resource_id = if resource_id.is_empty() {
             "volc.seedasr.auc"
@@ -718,7 +742,8 @@ impl AsrProvider for VolcDoubaoProvider {
             resource_id
         };
 
-        let is_public_url = request.audio_path.starts_with("http://") || request.audio_path.starts_with("https://");
+        let is_public_url =
+            request.audio_path.starts_with("http://") || request.audio_path.starts_with("https://");
         let audio = if is_public_url {
             json!({ "url": validate_public_media_url(&request.audio_path)?.to_string() })
         } else {
@@ -849,7 +874,10 @@ fn parse_volc_flash_transcription_result(
 ) -> Result<TranscriptDocument, AsrError> {
     let mut segments = Vec::new();
 
-    if let Some(utterances) = result.pointer("/result/utterances").and_then(Value::as_array) {
+    if let Some(utterances) = result
+        .pointer("/result/utterances")
+        .and_then(Value::as_array)
+    {
         for (index, utterance) in utterances.iter().enumerate() {
             let text = utterance
                 .get("text")
@@ -943,28 +971,27 @@ fn extract_audio_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, S
     let temp_dir = dir.join("exports").join("temp_audio");
     std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
-    let output_audio_path = temp_dir.join(format!(
-        "temp_asr_{}.mp3",
-        uuid::Uuid::new_v4()
-    ));
+    let output_audio_path = temp_dir.join(format!("temp_asr_{}.mp3", uuid::Uuid::new_v4()));
 
     // Run FFmpeg: extract mono mp3 at 16kHz, 64k bitrate
     let mut cmd = std::process::Command::new(crate::export::ffmpeg_path());
     cmd.arg("-y")
-       .arg("-i")
-       .arg(input_video_path)
-       .arg("-vn")
-       .arg("-c:a")
-       .arg("libmp3lame")
-       .arg("-ar")
-       .arg("16000")
-       .arg("-ac")
-       .arg("1")
-       .arg("-b:a")
-       .arg("64k")
-       .arg(&output_audio_path);
+        .arg("-i")
+        .arg(input_video_path)
+        .arg("-vn")
+        .arg("-c:a")
+        .arg("libmp3lame")
+        .arg("-ar")
+        .arg("16000")
+        .arg("-ac")
+        .arg("1")
+        .arg("-b:a")
+        .arg("64k")
+        .arg(&output_audio_path);
 
-    let output = cmd.output().map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
+    let output = cmd
+        .output()
+        .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
     if !output.status.success() {
         let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
         return Err(format!("音频提取失败：{err_msg}"));
@@ -1025,7 +1052,10 @@ pub fn upload_file_to_dashscope_oss(
         .text("Signature", policy_data.signature.clone())
         .text("key", key.clone())
         .text("x-oss-object-acl", policy_data.x_oss_object_acl.clone())
-        .text("x-oss-forbid-overwrite", policy_data.x_oss_forbid_overwrite.clone())
+        .text(
+            "x-oss-forbid-overwrite",
+            policy_data.x_oss_forbid_overwrite.clone(),
+        )
         .text("success_action_status", "200")
         .file("file", local_file_path)
         .map_err(|e| AsrError::LocalProcessing(format!("读取上传文件失败：{e}")))?;
@@ -1084,11 +1114,15 @@ mod tests {
                 ]
             }
         });
-        let document = parse_volc_flash_transcription_result(&AsrTranscriptionRequest {
-            job_id: None,
-            audio_path: "https://example.com/audio.mp3".to_string(),
-            config,
-        }, AsrProviderId::VolcDoubao, &response)
+        let document = parse_volc_flash_transcription_result(
+            &AsrTranscriptionRequest {
+                job_id: None,
+                audio_path: "https://example.com/audio.mp3".to_string(),
+                config,
+            },
+            AsrProviderId::VolcDoubao,
+            &response,
+        )
         .expect("transcript");
 
         assert_eq!(document.provider, AsrProviderId::VolcDoubao);
@@ -1189,12 +1223,9 @@ mod tests {
             }
         });
 
-        let document = parse_volc_flash_transcription_result(
-            &request,
-            AsrProviderId::VolcDoubao,
-            &response,
-        )
-        .expect("text fallback should parse");
+        let document =
+            parse_volc_flash_transcription_result(&request, AsrProviderId::VolcDoubao, &response)
+                .expect("text fallback should parse");
 
         assert_eq!(document.segments.len(), 1);
         assert_eq!(document.segments[0].start_ms, 0);

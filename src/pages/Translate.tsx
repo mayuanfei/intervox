@@ -6,6 +6,7 @@ import {
   Sliders,
   Sparkles,
   Zap,
+  Captions,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
 import {
@@ -13,7 +14,6 @@ import {
   BAILIAN_TRANSLATION_MODEL_OPTIONS,
   TARGET_LANGUAGE_OPTIONS,
   DOUBAO_TRANSLATION_MODEL_OPTIONS,
-  DOUBAO_TTS_MODEL_OPTIONS,
   DOUBAO_TTS_VOICE_OPTIONS,
   BAILIAN_TTS_VOICE_OPTIONS,
   ASR_PROVIDER_OPTIONS,
@@ -38,6 +38,10 @@ export function Translate() {
     setTtsVoice,
     translationModel,
     setTranslationModel,
+    showEnglishSubtitles,
+    setShowEnglishSubtitles,
+    showTargetLanguageSubtitles,
+    setShowTargetLanguageSubtitles,
     startFullPipeline,
     synthesisMode,
     setSynthesisMode,
@@ -83,6 +87,9 @@ export function Translate() {
 
   const activePath = mediaInputMode === "public_url" ? mediaUrl : localMediaPath;
   const isInputReady = activePath.trim().length > 0;
+  const targetLanguageLabel =
+    TARGET_LANGUAGE_OPTIONS.find((option) => option.value === config.target_language)?.label ||
+    config.target_language;
 
   return (
     <div className="space-y-6 font-mono text-[13px] animate-fade-in">
@@ -232,19 +239,23 @@ export function Translate() {
 
                 <div className="space-y-1">
                   <label className="th-text-3 text-[10px] uppercase font-bold">
-                    {config.provider === "volc_doubao" ? "Doubao Model ID / Endpoint ID" : "Translation Model"}
+                    Translation Model
                   </label>
                   {config.provider === "volc_doubao" ? (
-                    <div className="space-y-1">
-                      <input
-                        type="text"
+                    <div className="space-y-2">
+                      <select
                         value={translationModel}
                         onChange={(e) => setTranslationModel(e.target.value)}
-                        placeholder="请输入模型标识符 (如 doubao-seed-2-0-lite-260428) 或接入点 ID"
-                        className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 font-mono"
-                      />
-                      <p className="text-[10px] th-text-muted mt-1 leading-relaxed">
-                        默认使用官方预置大模型 <code className="text-cyan-400 font-mono">doubao-seed-2-0-lite-260428</code>（免创建接入点，免充值200元）。如果需要使用自定义接入点，请输入您的接入点 ID（以 ep- 开头）。
+                        className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
+                      >
+                        {DOUBAO_TRANSLATION_MODEL_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] th-text-muted leading-relaxed">
+                        使用豆包语音 API Key 调用 <code className="text-cyan-400 font-mono">volc.speech.mt</code>。无需配置火山方舟 API Key 或接入点 ID。
                       </p>
                     </div>
                   ) : (
@@ -430,6 +441,60 @@ export function Translate() {
                 </span>
               </label>
             </div>
+          </div>
+
+          {/* Subtitle Card */}
+          <div className="border th-border th-bg-card p-5 space-y-4 rounded-sm">
+            <div className="flex items-center gap-2 border-b th-border pb-2">
+              <Captions className="w-4 h-4 text-cyan-400" />
+              <span className="font-bold th-text uppercase tracking-widest text-xs">
+                SUBTITLES
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="flex items-start gap-3 border th-border bg-black/20 p-3 cursor-pointer hover:border-cyan-500/40 transition-colors rounded-sm">
+                <input
+                  type="checkbox"
+                  checked={showEnglishSubtitles}
+                  onChange={(event) => setShowEnglishSubtitles(event.target.checked)}
+                  className="w-4 h-4 mt-0.5 border th-border rounded bg-transparent checked:bg-cyan-500 focus:outline-none"
+                />
+                <span className="space-y-1">
+                  <span className="block th-text font-bold text-xs">
+                    英文字幕
+                  </span>
+                  <span className="block text-[10px] th-text-muted leading-relaxed">
+                    使用 ASR 识别出的英文原文字幕。
+                  </span>
+                </span>
+              </label>
+
+              <label className="flex items-start gap-3 border th-border bg-black/20 p-3 cursor-pointer hover:border-purple-500/40 transition-colors rounded-sm">
+                <input
+                  type="checkbox"
+                  checked={showTargetLanguageSubtitles}
+                  onChange={(event) => setShowTargetLanguageSubtitles(event.target.checked)}
+                  className="w-4 h-4 mt-0.5 border th-border rounded bg-transparent checked:bg-purple-500 focus:outline-none"
+                />
+                <span className="space-y-1">
+                  <span className="block th-text font-bold text-xs">
+                    目标语言字幕：{targetLanguageLabel}
+                  </span>
+                  <span className="block text-[10px] th-text-muted leading-relaxed">
+                    使用翻译后的目标语言字幕。
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            <p className="text-[10px] th-text-muted leading-relaxed">
+              {showEnglishSubtitles && showTargetLanguageSubtitles
+                ? "双语字幕已启用：英文显示在上方，目标语言显示在下方，两排文字独立换行避免重叠。"
+                : showEnglishSubtitles || showTargetLanguageSubtitles
+                  ? "单语字幕已启用：字幕将嵌入最终导出视频。"
+                  : "未启用字幕：最终视频只混合语音轨道，不嵌入字幕。"}
+            </p>
           </div>
         </div>
 

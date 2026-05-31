@@ -36,17 +36,10 @@ export function Settings() {
     saveVolcCredential,
     validateVolcProvider,
     isSavingVolcCredential,
-    volcArkCredentialDraft,
-    setVolcArkCredentialDraft,
-    volcArkStatus,
-    saveVolcArkCredential,
-    validateVolcArkProvider,
-    isSavingVolcArkCredential,
   } = useIntervox();
 
   const [showKey, setShowKey] = React.useState(false);
   const [showVolcKey, setShowVolcKey] = React.useState(false);
-  const [showVolcArkKey, setShowVolcArkKey] = React.useState(false);
 
   const handleBrowseOutputDir = async () => {
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
@@ -341,28 +334,6 @@ export function Settings() {
 
               <div className="space-y-2">
                 <label className="block th-text-muted text-[10px] font-bold uppercase">
-                  TTS RESOURCE ID (可选)
-                </label>
-                <input
-                  type="text"
-                  value={config.volc_doubao.tts_resource_id || ""}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setConfig((prev) => ({
-                      ...prev,
-                      volc_doubao: {
-                        ...prev.volc_doubao,
-                        tts_resource_id: val,
-                      }
-                    }));
-                  }}
-                  placeholder="留空使用 seed-tts-2.0；不要填 TTS-SeedTTS2... 实例ID"
-                  className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 font-mono text-xs"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="block th-text-muted text-[10px] font-bold uppercase">
                   AUTHORIZATION_BEARER (Speech API Key)
                 </label>
                 <div className="flex gap-2 relative">
@@ -411,81 +382,10 @@ export function Settings() {
               )}
             </div>
             <p className="text-[11px] th-text-muted mt-2">
-              用于 SEED-TTS 语音合成与声音复刻。请前往火山引擎「豆包语音 / API Key 管理」创建。
+              用于豆包 ASR、火山机器翻译和 SEED-TTS 语音合成。机器翻译需先在「语音技术」控制台开通 <code className="text-cyan-400 font-mono">volc.speech.mt</code>。
             </p>
           </div>
 
-          {/* Volcano Ark LLM Card */}
-          <div className="border th-border bg-black/30 p-4 rounded-sm space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="font-extrabold th-text tracking-wide text-xs">
-                VOLCANO_ARK_LLM_API (火山方舟)
-              </span>
-              {volcArkStatus?.ok ? (
-                <span className="text-[11px] text-emerald-400 flex items-center gap-1">
-                  <CheckCircle className="w-3.5 h-3.5" /> Active
-                </span>
-              ) : (
-                <span className="text-[11px] text-amber-500 flex items-center gap-1">
-                  <AlertTriangle className="w-3.5 h-3.5 animate-bounce" /> Missing Key
-                </span>
-              )}
-            </div>
-
-            <div className="space-y-3">
-              <div className="space-y-2">
-                <label className="block th-text-muted text-[10px] font-bold uppercase">
-                  AUTHORIZATION_BEARER (Ark API Key)
-                </label>
-                <div className="flex gap-2 relative">
-                  <input
-                    type={showVolcArkKey ? "text" : "password"}
-                    value={volcArkCredentialDraft}
-                    onChange={(e) => setVolcArkCredentialDraft(e.target.value)}
-                    placeholder={volcArkStatus?.ok ? "•••••••••••••••••••••••• (已保存)" : "请输入在「火山方舟」控制台申请的 API Key"}
-                    className="flex-1 px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 pr-10 font-mono"
-                  />
-                  <button
-                    onClick={() => setShowVolcArkKey(!showVolcArkKey)}
-                    className="absolute right-2 top-2.5 th-text-muted hover:th-text"
-                  >
-                    {showVolcArkKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  onClick={saveVolcArkCredential}
-                  disabled={isSavingVolcArkCredential || !volcArkCredentialDraft.trim()}
-                  className="px-3 py-2 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 hover:bg-cyan-500 hover:text-black transition-all flex items-center gap-2 uppercase text-[11px] font-bold disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <Save className="w-3.5 h-3.5" /> Save Bearer
-                </button>
-                <button
-                  onClick={validateVolcArkProvider}
-                  className="px-3 py-2 border th-border text-slate-300 hover:border-slate-500 transition-all flex items-center gap-2 uppercase text-[11px] font-bold"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" /> Validate Endpoint
-                </button>
-              </div>
-
-              {volcArkStatus && (
-                <div
-                  className={`border p-2.5 text-xs rounded-sm ${
-                    volcArkStatus.ok
-                      ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-300"
-                      : "border-red-500/20 bg-red-500/5 text-red-300"
-                  }`}
-                >
-                  {volcArkStatus.message}
-                </div>
-              )}
-            </div>
-            <p className="text-[11px] th-text-muted mt-2">
-              用于 Doubao-Pro / Doubao-Lite 翻译大模型。请前往火山引擎「火山方舟 / API Key 管理」创建。
-            </p>
-          </div>
         </div>
       </div>
     </div>

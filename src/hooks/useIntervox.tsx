@@ -102,6 +102,10 @@ interface IntervoxContextType {
   setOriginalAudioVolume: (volume: number) => void;
   voiceoverVolume: number;
   setVoiceoverVolume: (volume: number) => void;
+  showEnglishSubtitles: boolean;
+  setShowEnglishSubtitles: (show: boolean) => void;
+  showTargetLanguageSubtitles: boolean;
+  setShowTargetLanguageSubtitles: (show: boolean) => void;
 
   // Loading States
   isSavingCredential: boolean;
@@ -131,15 +135,6 @@ interface IntervoxContextType {
   isSavingVolcCredential: boolean;
   saveVolcCredential: () => Promise<void>;
   validateVolcProvider: () => Promise<void>;
-
-  // Volcano Ark Credential States
-  volcArkCredentialDraft: string;
-  setVolcArkCredentialDraft: (draft: string) => void;
-  volcArkStatus: CredentialValidationResult | null;
-  setVolcArkStatus: React.Dispatch<React.SetStateAction<CredentialValidationResult | null>>;
-  isSavingVolcArkCredential: boolean;
-  saveVolcArkCredential: () => Promise<void>;
-  validateVolcArkProvider: () => Promise<void>;
 
   // Actions
   saveCredential: () => Promise<void>;
@@ -201,6 +196,10 @@ function isPlaceholderTranscript(document?: TranscriptDocument | null) {
   });
 }
 
+function isVolcSpeechMtModel(model: string) {
+  return model.trim() === "volc-speech-mt";
+}
+
 export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [activePage, setActivePage] = useState("player");
   const [config, setConfig] = useState<AsrConfig>(() => {
@@ -227,11 +226,6 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [volcStatus, setVolcStatus] = useState<CredentialValidationResult | null>(null);
   const [isSavingVolcCredential, setIsSavingVolcCredential] = useState(false);
 
-  // Volcano Ark (LLM) credential states
-  const [volcArkCredentialDraft, setVolcArkCredentialDraft] = useState("");
-  const [volcArkStatus, setVolcArkStatus] = useState<CredentialValidationResult | null>(null);
-  const [isSavingVolcArkCredential, setIsSavingVolcArkCredential] = useState(false);
-  
   const [transcriptionStatus, setTranscriptionStatus] = useState<string | null>(null);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [translationStatus, setTranslationStatus] = useState<string | null>(null);
@@ -279,7 +273,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (config.provider === "volc_doubao") {
-      setTranslationModel("doubao-seed-2-0-lite-260428");
+      setTranslationModel("volc-speech-mt");
       setTtsVoice("zh_female_vv_uranus_bigtts");
     } else {
       setTranslationModel("qwen-plus");
@@ -291,6 +285,8 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [replaceOriginalAudio, setReplaceOriginalAudio] = useState(false);
   const [originalAudioVolume, setOriginalAudioVolume] = useState(0.25);
   const [voiceoverVolume, setVoiceoverVolume] = useState(1);
+  const [showEnglishSubtitles, setShowEnglishSubtitles] = useState(false);
+  const [showTargetLanguageSubtitles, setShowTargetLanguageSubtitles] = useState(false);
 
   // Task list and queue states
   const [tasks, setTasks] = useState<IntervoxTask[]>(() => {
@@ -476,6 +472,42 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       else unlisten();
     });
 
+    void listen<any>("tts-progress", (event) => {
+      if (!isMounted) return;
+      const { stage, completed_segments = 0, total_segments = 0, progress = 0 } = event.payload;
+
+      let statusStr = "正在合成配音...";
+      if (stage === "started") {
+        statusStr = "配音合成任务已启动...";
+      } else if (stage === "segment_completed") {
+        statusStr = `已合成 ${completed_segments}/${total_segments} 段配音。`;
+      } else if (stage === "completed") {
+        statusStr = "配音合成任务已全部完成！";
+      }
+
+      const shouldLog =
+        stage !== "segment_completed" ||
+        completed_segments === total_segments ||
+        completed_segments % 10 === 0;
+      setTtsStatus(statusStr);
+      updateActiveTaskStage("tts_clone", progress, shouldLog ? statusStr : undefined);
+    }).then((unlisten) => {
+      if (isMounted) unlisteners.push(unlisten);
+      else unlisten();
+    });
+
+    void listen<any>("tts-failed", (event) => {
+      if (!isMounted) return;
+      const msg = event.payload.message || "TTS 配音失败。";
+      setTtsError(msg);
+      setTtsStatus(null);
+      setIsSynthesizing(false);
+      failActiveTask(msg);
+    }).then((unlisten) => {
+      if (isMounted) unlisteners.push(unlisten);
+      else unlisten();
+    });
+
     return () => {
       isMounted = false;
       unlisteners.forEach((unlisten) => unlisten());
@@ -626,45 +658,10 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const saveVolcArkCredential = async () => {
-    setIsSavingVolcArkCredential(true);
-    setVolcArkStatus(null);
-    try {
-      const result = await invokeOrFallback<CredentialValidationResult>(
-        "asr_save_credential",
-        { provider: "volc_ark", secret: volcArkCredentialDraft },
-        { ok: volcArkCredentialDraft.trim().length > 0, provider: "volc_ark" as any, message: "开发预览：火山方舟凭据已保存。" }
-      );
-      setVolcArkStatus(result);
-      if (result.ok) {
-        setVolcArkCredentialDraft("");
-      }
-    } catch (e: any) {
-      setVolcArkStatus({ ok: false, provider: "volc_ark" as any, message: e.message || "保存失败。" });
-    } finally {
-      setIsSavingVolcArkCredential(false);
-    }
-  };
-
-  const validateVolcArkProvider = async () => {
-    setVolcArkStatus(null);
-    try {
-      const result = await invokeOrFallback<CredentialValidationResult>(
-        "asr_validate_credentials",
-        { provider: "volc_ark", config },
-        { ok: true, provider: "volc_ark" as any, message: "火山方舟配置校验成功。" }
-      );
-      setVolcArkStatus(result);
-    } catch (e: any) {
-      setVolcArkStatus({ ok: false, provider: "volc_ark" as any, message: e.message || "校验失败。" });
-    }
-  };
-
   useEffect(() => {
     // Validate credentials on initial load so the UI knows if keys exist
     validateProvider();
     validateVolcProvider();
-    validateVolcArkProvider();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -751,13 +748,19 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (config.provider === "volc_doubao" && !translationModel.trim()) {
-      setTranslationError("请先在配置界面中输入火山方舟的「推理接入点 ID」（以 ep- 开头）或模型标识符（如 doubao-seed-2-0-lite-260428）。");
+      setTranslationError("请选择火山机器翻译。");
       return;
     }
 
     setIsTranslating(true);
     setTranslationError(null);
-    setTranslationStatus(config.provider === "volc_doubao" ? "正在调用火山方舟大模型翻译..." : "正在调用百炼 Qwen 模型翻译...");
+    setTranslationStatus(
+      isVolcSpeechMtModel(translationModel)
+        ? "正在调用火山引擎机器翻译..."
+        : config.provider === "volc_doubao"
+          ? "正在调用火山翻译模型..."
+          : "正在调用百炼 Qwen 模型翻译..."
+    );
     setTranslationProgress(0.1);
 
     try {
@@ -773,7 +776,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         {
           source_language: String(transcript.source_language),
           target_language: config.target_language,
-          provider: "aliyun_qwen",
+          provider: isVolcSpeechMtModel(translationModel) ? "volc_speech_mt" : "aliyun_qwen",
           segments: transcript.segments.map((segment) => ({
             id: segment.id,
             start_ms: segment.start_ms,
@@ -838,7 +841,6 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             sample_rate: 24000,
             original_video_path: synthesisMode === "clone" ? activeMediaInput : null,
             app_id: config.volc_doubao.app_id || null,
-            tts_resource_id: config.volc_doubao.tts_resource_id || null,
           }
         },
         {
@@ -872,6 +874,10 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       setExportError("参数不齐，请确认已生成配音并填入视频地址。");
       return;
     }
+    if ((showEnglishSubtitles || showTargetLanguageSubtitles) && !translation) {
+      setExportError("字幕导出需要先完成翻译。");
+      return;
+    }
 
     setIsExporting(true);
     setExportError(null);
@@ -888,6 +894,13 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             replace_original_audio: replaceOriginalAudio,
             original_audio_volume: originalAudioVolume,
             voiceover_volume: voiceoverVolume,
+            subtitles: translation && (showEnglishSubtitles || showTargetLanguageSubtitles)
+              ? {
+                  show_english: showEnglishSubtitles,
+                  show_target_language: showTargetLanguageSubtitles,
+                  translation,
+                }
+              : null,
           }
         },
         {
@@ -930,7 +943,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       asr_cache_key: asrCacheKey,
       target_language: configToUse.target_language,
       deployment: configToUse.aliyun_bailian.deployment,
-      model: "qwen-plus",
+      model: translationModel,
     });
     const translationCacheKey = hashString(translationSignature);
 
@@ -992,11 +1005,19 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       }
 
       setTranscript(asrResult);
-      updateActiveTaskStage("translate", 0.1, configToUse.provider === "volc_doubao" ? "ASR 语音识别顺利完成。启动火山方舟翻译。" : "ASR 语音识别顺利完成。启动百炼 Qwen 翻译。");
+      updateActiveTaskStage(
+        "translate",
+        0.1,
+        isVolcSpeechMtModel(translationModel)
+          ? "ASR 语音识别顺利完成。启动火山机器翻译。"
+          : configToUse.provider === "volc_doubao"
+            ? "ASR 语音识别顺利完成。启动火山翻译。"
+            : "ASR 语音识别顺利完成。启动百炼 Qwen 翻译。"
+      );
       await new Promise((r) => setTimeout(r, 800));
 
       if (configToUse.provider === "volc_doubao" && !translationModel.trim()) {
-        throw new Error("请先在配置界面中输入火山方舟的「推理接入点 ID」（以 ep- 开头）或模型标识符（如 doubao-seed-2-0-lite-260428）。");
+        throw new Error("请选择火山机器翻译。");
       }
 
       // Step 3: Translate
@@ -1020,7 +1041,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
           {
             source_language: String(asrResult.source_language),
             target_language: configToUse.target_language,
-            provider: "aliyun_qwen",
+            provider: isVolcSpeechMtModel(translationModel) ? "volc_speech_mt" : "aliyun_qwen",
             segments: asrResult.segments.map((segment) => ({
               id: segment.id,
               start_ms: segment.start_ms,
@@ -1071,7 +1092,6 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             sample_rate: 24000,
             original_video_path: synthesisMode === "clone" ? mediaInput : null,
             app_id: configToUse.volc_doubao.app_id || null,
-            tts_resource_id: configToUse.volc_doubao.tts_resource_id || null,
           }
         },
         {
@@ -1106,6 +1126,13 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             replace_original_audio: replaceOriginalAudio,
             original_audio_volume: originalAudioVolume,
             voiceover_volume: voiceoverVolume,
+            subtitles: showEnglishSubtitles || showTargetLanguageSubtitles
+              ? {
+                  show_english: showEnglishSubtitles,
+                  show_target_language: showTargetLanguageSubtitles,
+                  translation: translateResult,
+                }
+              : null,
           }
         },
         {
@@ -1245,6 +1272,10 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         setOriginalAudioVolume,
         voiceoverVolume,
         setVoiceoverVolume,
+        showEnglishSubtitles,
+        setShowEnglishSubtitles,
+        showTargetLanguageSubtitles,
+        setShowTargetLanguageSubtitles,
         isSavingCredential,
         isTranscribing,
         isTranslating,
@@ -1268,13 +1299,6 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         isSavingVolcCredential,
         saveVolcCredential,
         validateVolcProvider,
-        volcArkCredentialDraft,
-        setVolcArkCredentialDraft,
-        volcArkStatus,
-        setVolcArkStatus,
-        isSavingVolcArkCredential,
-        saveVolcArkCredential,
-        validateVolcArkProvider,
         startTranscription,
         startTranslation,
         startTts,

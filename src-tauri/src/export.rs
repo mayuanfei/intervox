@@ -1,3 +1,4 @@
+use crate::translation::TranslationDocument;
 use crate::tts::TtsDocument;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -10,6 +11,9 @@ use uuid::Uuid;
 const MIN_SEGMENT_SLOT_MS: u64 = 350;
 const SEGMENT_FIT_PADDING_MS: u64 = 80;
 const MAX_TEMPO: f32 = 3.0;
+const MAX_ENGLISH_SUBTITLE_WIDTH: usize = 36;
+const MAX_TARGET_SUBTITLE_WIDTH: usize = 28;
+const PLAYBACK_CACHE_VERSION: &str = "v2-h264-preview";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ExportRequest {
@@ -19,6 +23,15 @@ pub struct ExportRequest {
     pub replace_original_audio: bool,
     pub original_audio_volume: Option<f32>,
     pub voiceover_volume: Option<f32>,
+    #[serde(default)]
+    pub subtitles: Option<SubtitleOptions>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct SubtitleOptions {
+    pub show_english: bool,
+    pub show_target_language: bool,
+    pub translation: TranslationDocument,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -55,6 +68,7 @@ pub fn export_video(request: ExportRequest) -> Result<ExportResult, ExportError>
     let voiceover_path = output_dir.join("voiceover.wav");
     let video_path = output_dir.join("dubbed.mp4");
     build_voiceover(&request.tts, &output_dir, &voiceover_path)?;
+    let subtitle_path = write_subtitles(request.subtitles.as_ref(), &output_dir)?;
     mux_video(
         &request.media_url,
         &voiceover_path,
@@ -62,12 +76,228 @@ pub fn export_video(request: ExportRequest) -> Result<ExportResult, ExportError>
         request.replace_original_audio,
         request.original_audio_volume.unwrap_or(0.25),
         request.voiceover_volume.unwrap_or(1.0),
+        subtitle_path.as_deref(),
     )?;
 
     Ok(ExportResult {
         voiceover_path: voiceover_path.to_string_lossy().to_string(),
         video_path: video_path.to_string_lossy().to_string(),
     })
+}
+
+fn write_subtitles(
+    options: Option<&SubtitleOptions>,
+    output_dir: &Path,
+) -> Result<Option<PathBuf>, ExportError> {
+    let Some(options) = options.filter(|options| {
+        options.show_english || options.show_target_language
+    }) else {
+        return Ok(None);
+    };
+
+    let subtitle_path = output_dir.join("subtitles.srt");
+    fs::write(&subtitle_path, build_subtitle_srt(options))?;
+    Ok(Some(subtitle_path))
+}
+
+fn build_subtitle_srt(options: &SubtitleOptions) -> String {
+    let mut subtitles = String::new();
+    let mut subtitle_index = 1;
+    for segment in &options.translation.segments {
+        let mut english_chunks = if options.show_english {
+            split_subtitle_lines(&segment.source_text, MAX_ENGLISH_SUBTITLE_WIDTH)
+        } else {
+            Vec::new()
+        };
+        let mut target_chunks = if options.show_target_language {
+            split_subtitle_lines(&segment.translated_text, MAX_TARGET_SUBTITLE_WIDTH)
+        } else {
+            Vec::new()
+        };
+        let cue_count = english_chunks.len().max(target_chunks.len());
+
+        if cue_count == 0 {
+            continue;
+        }
+
+        balance_subtitle_chunks(&mut english_chunks, cue_count);
+        balance_subtitle_chunks(&mut target_chunks, cue_count);
+        let duration_ms = segment.end_ms.max(segment.start_ms + 10) - segment.start_ms;
+
+        for cue_index in 0..cue_count {
+            let mut lines = Vec::with_capacity(2);
+            if let Some(text) = english_chunks.get(cue_index) {
+                lines.push(escape_srt_text(text));
+            }
+            if let Some(text) = target_chunks.get(cue_index) {
+                lines.push(escape_srt_text(text));
+            }
+            if lines.is_empty() {
+                continue;
+            }
+
+            let start_ms =
+                segment.start_ms + (duration_ms * cue_index as u64 / cue_count as u64);
+            let end_ms =
+                segment.start_ms + (duration_ms * (cue_index + 1) as u64 / cue_count as u64);
+            subtitles.push_str(&format!(
+                "{subtitle_index}\n{} --> {}\n{}\n\n",
+                srt_timestamp(start_ms),
+                srt_timestamp(end_ms),
+                lines.join("\n")
+            ));
+            subtitle_index += 1;
+        }
+    }
+
+    subtitles
+}
+
+fn split_subtitle_lines(text: &str, max_width: usize) -> Vec<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    for word in normalized.split(' ').flat_map(|word| split_long_word(word, max_width)) {
+        let separator_width = usize::from(!current_line.is_empty());
+        if !current_line.is_empty()
+            && subtitle_visual_width(&current_line) + separator_width + subtitle_visual_width(&word)
+                > max_width
+        {
+            lines.push(current_line);
+            current_line = String::new();
+        }
+
+        if !current_line.is_empty() {
+            current_line.push(' ');
+        }
+        current_line.push_str(&word);
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    lines
+}
+
+fn split_long_word(word: &str, max_width: usize) -> Vec<String> {
+    if subtitle_visual_width(word) <= max_width {
+        return vec![word.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut current_chunk = String::new();
+    let mut current_width = 0;
+    for character in word.chars() {
+        let character_width = subtitle_character_width(character);
+        if current_width > 0 && current_width + character_width > max_width {
+            chunks.push(current_chunk);
+            current_chunk = String::new();
+            current_width = 0;
+        }
+        current_chunk.push(character);
+        current_width += character_width;
+    }
+
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk);
+    }
+    chunks
+}
+
+fn balance_subtitle_chunks(chunks: &mut Vec<String>, cue_count: usize) {
+    while !chunks.is_empty() && chunks.len() < cue_count {
+        let Some((split_index, _)) = chunks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, text)| split_subtitle_line(text).map(|_| (index, text)))
+            .max_by_key(|(_, text)| subtitle_visual_width(text))
+        else {
+            break;
+        };
+
+        let Some((left, right)) = split_subtitle_line(&chunks[split_index]) else {
+            break;
+        };
+        chunks.splice(split_index..=split_index, [left, right]);
+    }
+}
+
+fn split_subtitle_line(text: &str) -> Option<(String, String)> {
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    if words.len() > 1 {
+        let split_index = best_subtitle_word_split(&words);
+        return Some((
+            words[..split_index].join(" "),
+            words[split_index..].join(" "),
+        ));
+    }
+
+    let characters = text.chars().collect::<Vec<_>>();
+    if characters.len() < 2 {
+        return None;
+    }
+    let target_width = subtitle_visual_width(text).div_ceil(2);
+    let mut split_index = 1;
+    let mut width = 0;
+    for (index, character) in characters.iter().enumerate().take(characters.len() - 1) {
+        width += subtitle_character_width(*character);
+        split_index = index + 1;
+        if width >= target_width {
+            break;
+        }
+    }
+
+    Some((
+        characters[..split_index].iter().collect(),
+        characters[split_index..].iter().collect(),
+    ))
+}
+
+fn best_subtitle_word_split(words: &[&str]) -> usize {
+    let total_width = subtitle_visual_width(&words.join(" "));
+    let target_width = total_width.div_ceil(2);
+    let mut best_index = 1;
+    let mut best_distance = usize::MAX;
+
+    for index in 1..words.len() {
+        let width = subtitle_visual_width(&words[..index].join(" "));
+        let distance = width.abs_diff(target_width);
+        if distance < best_distance {
+            best_index = index;
+            best_distance = distance;
+        }
+    }
+    best_index
+}
+
+fn subtitle_visual_width(text: &str) -> usize {
+    text.chars().map(subtitle_character_width).sum()
+}
+
+fn subtitle_character_width(character: char) -> usize {
+    if character.is_ascii() { 1 } else { 2 }
+}
+
+fn srt_timestamp(milliseconds: u64) -> String {
+    let hours = milliseconds / 3_600_000;
+    let minutes = (milliseconds % 3_600_000) / 60_000;
+    let seconds = (milliseconds % 60_000) / 1_000;
+    let milliseconds = milliseconds % 1_000;
+
+    format!("{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}")
+}
+
+fn escape_srt_text(text: &str) -> String {
+    text.trim()
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
 }
 
 fn ensure_ffmpeg() -> Result<(), ExportError> {
@@ -265,6 +495,7 @@ fn mux_video(
     replace_original_audio: bool,
     original_audio_volume: f32,
     voiceover_volume: f32,
+    subtitle_path: Option<&Path>,
 ) -> Result<(), ExportError> {
     let original_audio_volume = clamp_volume(original_audio_volume);
     let voiceover_volume = clamp_volume(voiceover_volume);
@@ -279,7 +510,11 @@ fn mux_video(
         .arg("-i")
         .arg(media_url)
         .arg("-i")
-        .arg(voiceover_path)
+        .arg(voiceover_path);
+    if let Some(subtitle_path) = subtitle_path {
+        command.arg("-i").arg(subtitle_path);
+    }
+    command
         .arg("-map")
         .arg("0:v:0");
 
@@ -292,6 +527,16 @@ fn mux_video(
         ))
         .arg("-map")
         .arg("[aout]");
+
+    if subtitle_path.is_some() {
+        command
+            .arg("-map")
+            .arg("2:s:0")
+            .arg("-c:s")
+            .arg("mov_text")
+            .arg("-disposition:s:0")
+            .arg("default");
+    }
 
     command
         .arg("-c:v")
@@ -349,12 +594,16 @@ pub fn prepare_video_for_playback(input_path: String) -> Result<String, String> 
         .unwrap_or("")
         .to_lowercase();
 
-    // Standard webview playable formats
-    if ext == "mp4" || ext == "mov" || ext == "m4v" || ext == "mp3" || ext == "wav" || ext == "m4a" {
+    if matches!(ext.as_str(), "mp3" | "wav" | "m4a") {
         return Ok(input_path);
     }
 
-    // Otherwise, fast remux to temp mp4
+    let media_info = probe_playback_media(path)?;
+    let playback_mode = playback_video_mode(&ext, &media_info);
+    if playback_mode == PlaybackVideoMode::Direct {
+        return Ok(input_path);
+    }
+
     let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
     if dir.ends_with("src-tauri") {
         dir.pop();
@@ -362,44 +611,230 @@ pub fn prepare_video_for_playback(input_path: String) -> Result<String, String> 
     let temp_dir = dir.join("exports").join("temp_playback");
     fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
-    // Create a deterministic hash/name based on file path to avoid redundant transcoding
+    // Include the conversion profile and file metadata so old incompatible previews are not reused.
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
+    PLAYBACK_CACHE_VERSION.hash(&mut hasher);
     input_path.hash(&mut hasher);
-    let output_path = temp_dir.join(format!("playback_temp_{:x}.mp4", hasher.finish()));
+    if let Ok(metadata) = fs::metadata(path) {
+        metadata.len().hash(&mut hasher);
+        metadata.modified().ok().hash(&mut hasher);
+    }
+    let output_path = temp_dir.join(format!("playback_preview_{:x}.mp4", hasher.finish()));
+    let partial_output_path = output_path.with_extension("partial.mp4");
 
     if output_path.exists() {
-        return Ok(output_path.to_string_lossy().to_string());
+        let cached_info = probe_playback_media(&output_path)?;
+        if playback_video_mode("mp4", &cached_info) == PlaybackVideoMode::Direct {
+            return Ok(output_path.to_string_lossy().to_string());
+        }
+        let _ = fs::remove_file(&output_path);
+    }
+    let _ = fs::remove_file(&partial_output_path);
+
+    let preferred_encoder = playback_h264_encoder();
+    let mut output = playback_conversion_command(
+        &input_path,
+        &partial_output_path,
+        playback_mode,
+        &preferred_encoder,
+    )
+    .output()
+    .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
+
+    if !output.status.success()
+        && playback_mode == PlaybackVideoMode::Transcode
+        && preferred_encoder != "libx264"
+    {
+        let _ = fs::remove_file(&partial_output_path);
+        output = playback_conversion_command(
+            &input_path,
+            &partial_output_path,
+            playback_mode,
+            "libx264",
+        )
+        .output()
+        .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
     }
 
-    // Run FFmpeg: copy video, transcode audio to AAC
-    let mut cmd = ffmpeg_command();
-    cmd.arg("-y")
-       .arg("-i")
-       .arg(&input_path)
-       .arg("-c:v")
-       .arg("copy")
-       .arg("-c:a")
-       .arg("aac")
-       .arg("-map")
-       .arg("0:v:0?")
-       .arg("-map")
-       .arg("0:a:0?")
-       .arg(&output_path);
-
-    let output = cmd.output().map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
     if !output.status.success() {
+        let _ = fs::remove_file(&partial_output_path);
         let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
         return Err(format!("转码失败：{err_msg}"));
     }
+    fs::rename(&partial_output_path, &output_path)
+        .map_err(|error| format!("保存播放器预览失败：{error}"))?;
 
     Ok(output_path.to_string_lossy().to_string())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PlaybackMediaInfo {
+    video_codec: Option<String>,
+    audio_codec: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackVideoMode {
+    Direct,
+    Remux,
+    Transcode,
+}
+
+fn probe_playback_media(path: &Path) -> Result<PlaybackMediaInfo, String> {
+    let output = Command::new(ffprobe_path())
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg("stream=codec_type,codec_name")
+        .arg("-of")
+        .arg("json")
+        .arg(path)
+        .output()
+        .map_err(|_| "找不到 ffprobe。请先安装 FFmpeg。".to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "读取媒体编码失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let response: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    let mut info = PlaybackMediaInfo::default();
+    for stream in response
+        .get("streams")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let codec_type = stream.get("codec_type").and_then(serde_json::Value::as_str);
+        let codec_name = stream
+            .get("codec_name")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        match codec_type {
+            Some("video") if info.video_codec.is_none() => info.video_codec = codec_name,
+            Some("audio") if info.audio_codec.is_none() => info.audio_codec = codec_name,
+            _ => {}
+        }
+    }
+    Ok(info)
+}
+
+fn playback_video_mode(ext: &str, info: &PlaybackMediaInfo) -> PlaybackVideoMode {
+    if info.video_codec.is_none() {
+        return PlaybackVideoMode::Direct;
+    }
+    if info.video_codec.as_deref() != Some("h264") {
+        return PlaybackVideoMode::Transcode;
+    }
+
+    let compatible_container = matches!(ext, "mp4" | "mov" | "m4v");
+    let compatible_audio = info
+        .audio_codec
+        .as_deref()
+        .map_or(true, |codec| matches!(codec, "aac" | "mp3"));
+    if compatible_container && compatible_audio {
+        PlaybackVideoMode::Direct
+    } else {
+        PlaybackVideoMode::Remux
+    }
+}
+
+fn ffprobe_path() -> PathBuf {
+    let ffmpeg = ffmpeg_path();
+    let ffprobe = ffmpeg.with_file_name("ffprobe");
+    if ffprobe.is_file() {
+        ffprobe
+    } else {
+        PathBuf::from("ffprobe")
+    }
+}
+
+fn playback_h264_encoder() -> String {
+    let supports_videotoolbox = ffmpeg_command()
+        .arg("-hide_banner")
+        .arg("-encoders")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).contains("h264_videotoolbox"))
+        .unwrap_or(false);
+
+    if supports_videotoolbox {
+        "h264_videotoolbox".to_string()
+    } else {
+        "libx264".to_string()
+    }
+}
+
+fn playback_conversion_command(
+    input_path: &str,
+    output_path: &Path,
+    playback_mode: PlaybackVideoMode,
+    encoder: &str,
+) -> Command {
+    let mut command = ffmpeg_command();
+    command
+        .arg("-y")
+        .arg("-i")
+        .arg(input_path)
+        .arg("-map")
+        .arg("0:v:0?")
+        .arg("-map")
+        .arg("0:a:0?")
+        .arg("-c:a")
+        .arg("aac");
+
+    if playback_mode == PlaybackVideoMode::Transcode {
+        command
+            .arg("-c:v")
+            .arg(encoder)
+            .arg("-vf")
+            .arg("scale=1920:-2:force_original_aspect_ratio=decrease")
+            .arg("-pix_fmt")
+            .arg("yuv420p");
+        if encoder == "h264_videotoolbox" {
+            command.arg("-allow_sw").arg("1").arg("-b:v").arg("6M");
+        } else {
+            command.arg("-preset").arg("veryfast").arg("-crf").arg("23");
+        }
+    } else {
+        command.arg("-c:v").arg("copy");
+    }
+
+    command
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(output_path);
+    command
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::asr::TargetLanguageCode;
+    use crate::translation::TranslationSegment;
+
+    fn subtitle_options(show_english: bool, show_target_language: bool) -> SubtitleOptions {
+        SubtitleOptions {
+            show_english,
+            show_target_language,
+            translation: TranslationDocument {
+                source_language: "en-US".to_string(),
+                target_language: TargetLanguageCode::KoKr,
+                provider: "volc_speech_mt".to_string(),
+                segments: vec![TranslationSegment {
+                    id: "seg_1".to_string(),
+                    start_ms: 1_230,
+                    end_ms: 4_560,
+                    speaker_id: None,
+                    source_text: "Hello world".to_string(),
+                    translated_text: "안녕하세요".to_string(),
+                }],
+            },
+        }
+    }
 
     #[test]
     fn voiceover_filter_delays_each_segment_to_original_start_time() {
@@ -462,5 +897,101 @@ mod tests {
         fs::remove_file(&test_file).ok();
 
         assert_eq!(duration, 2000);
+    }
+
+    #[test]
+    fn bilingual_subtitles_render_english_above_target_language() {
+        let subtitles = build_subtitle_srt(&subtitle_options(true, true));
+
+        assert!(subtitles.contains(
+            "1\n00:00:01,230 --> 00:00:04,560\nHello world\n안녕하세요\n"
+        ));
+    }
+
+    #[test]
+    fn single_target_subtitle_omits_english_line() {
+        let subtitles = build_subtitle_srt(&subtitle_options(false, true));
+
+        assert!(!subtitles.contains("Hello world"));
+        assert!(subtitles.contains("1\n00:00:01,230 --> 00:00:04,560\n안녕하세요\n"));
+    }
+
+    #[test]
+    fn long_bilingual_subtitles_are_split_into_short_two_line_cues() {
+        let mut options = subtitle_options(true, true);
+        options.translation.segments[0].start_ms = 0;
+        options.translation.segments[0].end_ms = 12_000;
+        options.translation.segments[0].source_text =
+            "Everything looks so good, and also when I hover this button, we have this little detail that subtle animation, and those are things that matter when you are building some UI."
+                .to_string();
+        options.translation.segments[0].translated_text =
+            "所有东西看起来都非常棒，而且当我将鼠标悬停在这个按钮上时，会看到一个细微的动画效果。这些细节在构建用户界面时至关重要。"
+                .to_string();
+
+        let subtitles = build_subtitle_srt(&options);
+        let cues = subtitles.trim().split("\n\n").collect::<Vec<_>>();
+
+        assert!(cues.len() > 3);
+        for cue in cues {
+            let lines = cue.lines().skip(2).collect::<Vec<_>>();
+            assert_eq!(lines.len(), 2);
+            assert!(subtitle_visual_width(lines[0]) <= MAX_ENGLISH_SUBTITLE_WIDTH);
+            assert!(subtitle_visual_width(lines[1]) <= MAX_TARGET_SUBTITLE_WIDTH);
+        }
+    }
+
+    #[test]
+    fn english_subtitle_split_preserves_word_boundaries() {
+        assert_eq!(
+            split_subtitle_lines("Everything looks so good when hovering", 20),
+            vec!["Everything looks so", "good when hovering"]
+        );
+    }
+
+    #[test]
+    fn srt_text_escapes_markup_and_normalizes_line_breaks() {
+        assert_eq!(
+            escape_srt_text("line <one>\r\nline & two"),
+            "line &lt;one&gt;\nline &amp; two"
+        );
+    }
+
+    #[test]
+    fn av1_video_is_transcoded_for_webview_playback() {
+        let info = PlaybackMediaInfo {
+            video_codec: Some("av1".to_string()),
+            audio_codec: Some("opus".to_string()),
+        };
+
+        assert_eq!(
+            playback_video_mode("mkv", &info),
+            PlaybackVideoMode::Transcode
+        );
+    }
+
+    #[test]
+    fn h264_mkv_is_remuxed_for_webview_playback() {
+        let info = PlaybackMediaInfo {
+            video_codec: Some("h264".to_string()),
+            audio_codec: Some("opus".to_string()),
+        };
+
+        assert_eq!(
+            playback_video_mode("mkv", &info),
+            PlaybackVideoMode::Remux
+        );
+    }
+
+    #[test]
+    fn h264_aac_mp4_plays_without_preview_conversion() {
+        let info = PlaybackMediaInfo {
+            video_codec: Some("h264".to_string()),
+            audio_codec: Some("aac".to_string()),
+        };
+
+        assert_eq!(
+            playback_video_mode("mp4", &info),
+            PlaybackVideoMode::Direct
+        );
     }
 }
