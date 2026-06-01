@@ -5,14 +5,24 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock,
+};
 use std::thread;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 const MIN_SEGMENT_SLOT_MS: u64 = 350;
 const SEGMENT_FIT_PADDING_MS: u64 = 80;
 const MAX_TEMPO: f32 = 1.5;
-const PLAYBACK_CACHE_VERSION: &str = "v4-primary-stream-preview";
+const PLAYBACK_CACHE_VERSION: &str = "v5-hls-preview";
+const PLAYBACK_HLS_ENTRYPOINT: &str = "index.m3u8";
+const PLAYBACK_HLS_SEGMENT_PATTERN: &str = "segment_%05d.ts";
+const PLAYBACK_HLS_FIRST_SEGMENT: &str = "segment_00000.ts";
+const PLAYBACK_HLS_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_VOICEOVER_INPUTS_PER_COMMAND: usize = 100;
+static ACTIVE_PLAYBACK_HLS_CANCEL: OnceLock<Mutex<Option<Arc<AtomicBool>>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy)]
 struct VoiceoverTiming {
@@ -60,6 +70,17 @@ pub struct ExportProgress {
     pub processed_ms: u64,
     pub total_ms: u64,
     pub progress: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaybackProgress {
+    pub stage: String,
+    pub input_path: String,
+    pub processed_ms: u64,
+    pub total_ms: u64,
+    pub progress: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -129,16 +150,46 @@ where
 }
 
 fn export_progress(stage: &str, processed_ms: u64, total_ms: u64) -> ExportProgress {
-    let progress = if total_ms == 0 {
-        0.0
-    } else {
-        processed_ms.min(total_ms) as f32 / total_ms as f32
-    };
     ExportProgress {
         stage: stage.to_string(),
         processed_ms,
         total_ms,
-        progress,
+        progress: normalized_progress(processed_ms, total_ms),
+    }
+}
+
+fn playback_failed_progress(input_path: &str, total_ms: u64, message: String) -> PlaybackProgress {
+    PlaybackProgress {
+        stage: "failed".to_string(),
+        input_path: input_path.to_string(),
+        processed_ms: 0,
+        total_ms,
+        progress: 0.0,
+        message: Some(message),
+    }
+}
+
+fn playback_progress(
+    stage: &str,
+    input_path: &str,
+    processed_ms: u64,
+    total_ms: u64,
+) -> PlaybackProgress {
+    PlaybackProgress {
+        stage: stage.to_string(),
+        input_path: input_path.to_string(),
+        processed_ms,
+        total_ms,
+        progress: normalized_progress(processed_ms, total_ms),
+        message: None,
+    }
+}
+
+fn normalized_progress(processed_ms: u64, total_ms: u64) -> f32 {
+    if total_ms == 0 {
+        0.0
+    } else {
+        processed_ms.min(total_ms) as f32 / total_ms as f32
     }
 }
 
@@ -720,6 +771,15 @@ fn run_command_with_progress(
     total_ms: u64,
     mut on_progress: impl FnMut(u64),
 ) -> Result<(), ExportError> {
+    run_command_with_progress_controlled(command, total_ms, &mut on_progress, || false)
+}
+
+fn run_command_with_progress_controlled(
+    command: &mut Command,
+    total_ms: u64,
+    mut on_progress: impl FnMut(u64),
+    mut should_cancel: impl FnMut() -> bool,
+) -> Result<(), ExportError> {
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -739,7 +799,13 @@ fn run_command_with_progress(
         .stdout
         .take()
         .ok_or_else(|| ExportError::CommandFailed("无法读取 ffmpeg 进度输出。".to_string()))?;
+    let mut cancelled = false;
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        if should_cancel() {
+            let _ = child.kill();
+            cancelled = true;
+            break;
+        }
         if let Some(processed_ms) = parse_ffmpeg_progress_ms(&line) {
             on_progress(processed_ms.min(total_ms));
         }
@@ -748,6 +814,9 @@ fn run_command_with_progress(
         .wait()
         .map_err(|error| ExportError::CommandFailed(format!("等待 ffmpeg 失败：{error}")))?;
     let stderr = stderr_reader.join().unwrap_or_default();
+    if cancelled {
+        return Err(ExportError::CommandFailed("任务已取消。".to_string()));
+    }
     if status.success() {
         on_progress(total_ms);
         return Ok(());
@@ -798,10 +867,22 @@ fn resolve_output_dir(output_dir: Option<&str>) -> Result<PathBuf, std::io::Erro
     crate::storage::configured_output_root(output_dir)
 }
 
+#[allow(dead_code)]
 pub fn prepare_video_for_playback(
     input_path: String,
     output_dir: Option<String>,
 ) -> Result<String, String> {
+    prepare_video_for_playback_with_progress(input_path, output_dir, |_| {})
+}
+
+pub fn prepare_video_for_playback_with_progress<F>(
+    input_path: String,
+    output_dir: Option<String>,
+    mut on_progress: F,
+) -> Result<String, String>
+where
+    F: FnMut(PlaybackProgress) + Send + 'static,
+{
     let path = Path::new(&input_path);
     if !path.exists() {
         return Err("视频文件不存在。".to_string());
@@ -819,6 +900,7 @@ pub fn prepare_video_for_playback(
 
     let media_info = probe_playback_media(path)?;
     let playback_mode = playback_video_mode(&ext, &media_info);
+    cancel_active_hls_preview();
     if playback_mode == PlaybackVideoMode::Direct {
         return crate::playback_server::register_playback_file(path);
     }
@@ -836,7 +918,19 @@ pub fn prepare_video_for_playback(
         metadata.len().hash(&mut hasher);
         metadata.modified().ok().hash(&mut hasher);
     }
-    let output_path = temp_dir.join(format!("playback_preview_{:x}.mp4", hasher.finish()));
+    let cache_key = hasher.finish();
+    let total_ms = probe_media_duration_ms(&input_path).unwrap_or(0);
+    if playback_mode == PlaybackVideoMode::Transcode {
+        return prepare_hls_playback_preview(
+            input_path,
+            &temp_dir,
+            cache_key,
+            total_ms,
+            on_progress,
+        );
+    }
+
+    let output_path = temp_dir.join(format!("playback_preview_{cache_key:x}.mp4"));
     let partial_output_path = output_path.with_extension("partial.mp4");
 
     if output_path.exists() {
@@ -848,43 +942,252 @@ pub fn prepare_video_for_playback(
     }
     let _ = fs::remove_file(&partial_output_path);
 
+    on_progress(playback_progress("started", &input_path, 0, total_ms));
     let preferred_encoder = playback_h264_encoder();
     let copy_audio = media_info.audio_codec.as_deref() == Some("aac");
-    let mut output = playback_conversion_command(
+    let mut command = playback_conversion_command(
         &input_path,
         &partial_output_path,
         playback_mode,
         &preferred_encoder,
         copy_audio,
-    )
-    .output()
-    .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
+    );
+    let mut result = run_command_with_progress(&mut command, total_ms, |processed_ms| {
+        on_progress(playback_progress(
+            "transcoding",
+            &input_path,
+            processed_ms,
+            total_ms,
+        ));
+    });
 
-    if !output.status.success()
+    if result.is_err()
         && playback_mode == PlaybackVideoMode::Transcode
         && preferred_encoder != "libx264"
     {
         let _ = fs::remove_file(&partial_output_path);
-        output = playback_conversion_command(
+        on_progress(playback_progress("retrying", &input_path, 0, total_ms));
+        let mut command = playback_conversion_command(
             &input_path,
             &partial_output_path,
             playback_mode,
             "libx264",
             copy_audio,
-        )
-        .output()
-        .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
+        );
+        result = run_command_with_progress(&mut command, total_ms, |processed_ms| {
+            on_progress(playback_progress(
+                "transcoding",
+                &input_path,
+                processed_ms,
+                total_ms,
+            ));
+        });
     }
 
-    if !output.status.success() {
+    if let Err(error) = result {
         let _ = fs::remove_file(&partial_output_path);
-        let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("转码失败：{err_msg}"));
+        return Err(format!("转码失败：{error}"));
     }
     fs::rename(&partial_output_path, &output_path)
         .map_err(|error| format!("保存播放器预览失败：{error}"))?;
+    on_progress(playback_progress(
+        "completed",
+        &input_path,
+        total_ms,
+        total_ms,
+    ));
 
     crate::playback_server::register_playback_file(&output_path)
+}
+
+fn prepare_hls_playback_preview<F>(
+    input_path: String,
+    temp_dir: &Path,
+    cache_key: u64,
+    total_ms: u64,
+    mut on_progress: F,
+) -> Result<String, String>
+where
+    F: FnMut(PlaybackProgress) + Send + 'static,
+{
+    let stream_dir = temp_dir.join(format!("playback_stream_{cache_key:x}"));
+    let playlist_path = stream_dir.join(PLAYBACK_HLS_ENTRYPOINT);
+    if hls_playlist_is_complete(&playlist_path) {
+        return crate::playback_server::register_playback_directory(
+            &stream_dir,
+            PLAYBACK_HLS_ENTRYPOINT,
+        );
+    }
+
+    let _ = fs::remove_dir_all(&stream_dir);
+    fs::create_dir_all(&stream_dir)
+        .map_err(|error| format!("创建播放器流媒体目录失败：{error}"))?;
+    on_progress(playback_progress("started", &input_path, 0, total_ms));
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    replace_active_hls_preview(Arc::clone(&cancel));
+    let worker_stream_dir = stream_dir.clone();
+    let worker_input_path = input_path.clone();
+    let worker_error = Arc::new(Mutex::new(None));
+    let worker_error_for_thread = Arc::clone(&worker_error);
+    let worker_cancel = Arc::clone(&cancel);
+    let worker = thread::Builder::new()
+        .name("intervox-playback-hls".to_string())
+        .spawn(move || {
+            let result = run_hls_playback_worker(
+                &worker_input_path,
+                &worker_stream_dir,
+                total_ms,
+                &worker_cancel,
+                &mut on_progress,
+            );
+            if let Err(error) = result {
+                on_progress(playback_failed_progress(
+                    &worker_input_path,
+                    total_ms,
+                    error.clone(),
+                ));
+                if let Ok(mut state) = worker_error_for_thread.lock() {
+                    *state = Some(error);
+                }
+            }
+            clear_active_hls_preview(&worker_cancel);
+        });
+    if let Err(error) = worker {
+        cancel.store(true, Ordering::Relaxed);
+        clear_active_hls_preview(&cancel);
+        return Err(format!("启动播放器流媒体转码失败：{error}"));
+    }
+
+    wait_for_hls_playlist(&playlist_path, &worker_error, &cancel)?;
+    crate::playback_server::register_playback_directory(&stream_dir, PLAYBACK_HLS_ENTRYPOINT)
+}
+
+fn run_hls_playback_worker<F>(
+    input_path: &str,
+    stream_dir: &Path,
+    total_ms: u64,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(PlaybackProgress),
+{
+    let preferred_encoder = playback_h264_encoder();
+    let mut encoders = vec![preferred_encoder.as_str()];
+    if preferred_encoder != "libx264" {
+        encoders.push("libx264");
+    }
+
+    let mut last_error = None;
+    for (index, encoder) in encoders.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("播放器预览转换已取消。".to_string());
+        }
+        if index > 0 {
+            let _ = fs::remove_dir_all(stream_dir);
+            fs::create_dir_all(stream_dir)
+                .map_err(|error| format!("重建播放器流媒体目录失败：{error}"))?;
+            on_progress(playback_progress("retrying", input_path, 0, total_ms));
+        }
+        let mut command = hls_playback_conversion_command(input_path, stream_dir, encoder);
+        let result = run_command_with_progress_controlled(
+            &mut command,
+            total_ms,
+            |processed_ms| {
+                on_progress(playback_progress(
+                    "transcoding",
+                    input_path,
+                    processed_ms,
+                    total_ms,
+                ));
+            },
+            || cancel.load(Ordering::Relaxed),
+        );
+        match result {
+            Ok(()) => {
+                on_progress(playback_progress(
+                    "completed",
+                    input_path,
+                    total_ms,
+                    total_ms,
+                ));
+                return Ok(());
+            }
+            Err(error) => last_error = Some(error.to_string()),
+        }
+    }
+
+    Err(format!(
+        "播放器流媒体转码失败：{}",
+        last_error.unwrap_or_else(|| "未知错误".to_string())
+    ))
+}
+
+fn wait_for_hls_playlist(
+    playlist_path: &Path,
+    worker_error: &Arc<Mutex<Option<String>>>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let first_segment = playlist_path.with_file_name(PLAYBACK_HLS_FIRST_SEGMENT);
+    let deadline = Instant::now() + PLAYBACK_HLS_READY_TIMEOUT;
+    loop {
+        if playlist_path.is_file() && first_segment.is_file() {
+            return Ok(());
+        }
+        if let Ok(error) = worker_error.lock() {
+            if let Some(error) = error.as_ref() {
+                return Err(error.clone());
+            }
+        }
+        if Instant::now() >= deadline {
+            cancel.store(true, Ordering::Relaxed);
+            return Err("播放器首个预览片段生成超时。请稍后重试。".to_string());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn cancel_active_hls_preview() {
+    if let Ok(mut active) = ACTIVE_PLAYBACK_HLS_CANCEL
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        if let Some(cancel) = active.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+fn replace_active_hls_preview(cancel: Arc<AtomicBool>) {
+    if let Ok(mut active) = ACTIVE_PLAYBACK_HLS_CANCEL
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        if let Some(previous) = active.replace(cancel) {
+            previous.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+fn clear_active_hls_preview(cancel: &Arc<AtomicBool>) {
+    if let Ok(mut active) = ACTIVE_PLAYBACK_HLS_CANCEL
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        if active
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, cancel))
+        {
+            active.take();
+        }
+    }
+}
+
+fn hls_playlist_is_complete(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .map(|playlist| playlist.contains("#EXT-X-ENDLIST"))
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -985,18 +1288,38 @@ pub fn ffprobe_path() -> PathBuf {
 }
 
 fn playback_h264_encoder() -> String {
-    let supports_videotoolbox = ffmpeg_command()
-        .arg("-hide_banner")
-        .arg("-encoders")
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).contains("h264_videotoolbox"))
-        .unwrap_or(false);
+    static ENCODER: OnceLock<String> = OnceLock::new();
+    ENCODER
+        .get_or_init(|| {
+            let supports_videotoolbox = ffmpeg_command()
+                .arg("-hide_banner")
+                .arg("-loglevel")
+                .arg("error")
+                .arg("-f")
+                .arg("lavfi")
+                .arg("-i")
+                .arg("color=size=16x16:rate=1")
+                .arg("-frames:v")
+                .arg("1")
+                .arg("-an")
+                .arg("-c:v")
+                .arg("h264_videotoolbox")
+                .arg("-f")
+                .arg("null")
+                .arg("-")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
 
-    if supports_videotoolbox {
-        "h264_videotoolbox".to_string()
-    } else {
-        "libx264".to_string()
-    }
+            if supports_videotoolbox {
+                "h264_videotoolbox".to_string()
+            } else {
+                "libx264".to_string()
+            }
+        })
+        .clone()
 }
 
 fn playback_conversion_command(
@@ -1024,7 +1347,46 @@ fn playback_conversion_command(
         command.arg("-c:v").arg("copy");
     }
 
-    command.arg("-movflags").arg("+faststart").arg(output_path);
+    command
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg("-progress")
+        .arg("pipe:1")
+        .arg("-nostats")
+        .arg(output_path);
+    command
+}
+
+fn hls_playback_conversion_command(input_path: &str, stream_dir: &Path, encoder: &str) -> Command {
+    let mut command = ffmpeg_command();
+    command
+        .arg("-y")
+        .arg("-i")
+        .arg(input_path)
+        .arg("-map")
+        .arg("0:v:0?")
+        .arg("-map")
+        .arg("0:a:0?")
+        .arg("-c:a")
+        .arg("aac");
+    append_playback_h264_video_args(&mut command, encoder);
+    command
+        .arg("-force_key_frames")
+        .arg("expr:gte(t,n_forced*2)")
+        .arg("-f")
+        .arg("hls")
+        .arg("-hls_time")
+        .arg("2")
+        .arg("-hls_list_size")
+        .arg("0")
+        .arg("-hls_playlist_type")
+        .arg("event")
+        .arg("-hls_segment_filename")
+        .arg(stream_dir.join(PLAYBACK_HLS_SEGMENT_PATTERN))
+        .arg("-progress")
+        .arg("pipe:1")
+        .arg("-nostats")
+        .arg(stream_dir.join(PLAYBACK_HLS_ENTRYPOINT));
     command
 }
 
@@ -1040,6 +1402,25 @@ fn append_h264_video_args(command: &mut Command, encoder: &str) {
         command.arg("-allow_sw").arg("1").arg("-b:v").arg("6M");
     } else {
         command.arg("-preset").arg("veryfast").arg("-crf").arg("23");
+    }
+}
+
+fn append_playback_h264_video_args(command: &mut Command, encoder: &str) {
+    command
+        .arg("-c:v")
+        .arg(encoder)
+        .arg("-vf")
+        .arg("scale='min(960,iw)':-2")
+        .arg("-pix_fmt")
+        .arg("yuv420p");
+    if encoder == "h264_videotoolbox" {
+        command.arg("-allow_sw").arg("1").arg("-b:v").arg("2M");
+    } else {
+        command
+            .arg("-preset")
+            .arg("ultrafast")
+            .arg("-crf")
+            .arg("25");
     }
 }
 
@@ -1247,6 +1628,36 @@ mod tests {
             playback_video_mode("mkv", &info),
             PlaybackVideoMode::Transcode
         );
+    }
+
+    #[test]
+    fn hls_preview_uses_short_low_resolution_segments() {
+        let command =
+            hls_playback_conversion_command("input.mkv", Path::new("/tmp/preview"), "libx264");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert!(args.contains(&"scale='min(960,iw)':-2".to_string()));
+        assert!(args.contains(&"expr:gte(t,n_forced*2)".to_string()));
+        assert!(args.windows(2).any(|args| args == ["-hls_time", "2"]));
+        assert!(args.windows(2).any(|args| args == ["-preset", "ultrafast"]));
+    }
+
+    #[test]
+    fn hls_cache_is_reused_only_after_playlist_is_complete() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let playlist_path = temp_dir.path().join(PLAYBACK_HLS_ENTRYPOINT);
+        fs::write(&playlist_path, "#EXTM3U\n#EXTINF:2.0,\nsegment_00000.ts\n").unwrap();
+        assert!(!hls_playlist_is_complete(&playlist_path));
+
+        fs::write(
+            &playlist_path,
+            "#EXTM3U\n#EXTINF:2.0,\nsegment_00000.ts\n#EXT-X-ENDLIST\n",
+        )
+        .unwrap();
+        assert!(hls_playlist_is_complete(&playlist_path));
     }
 
     #[test]

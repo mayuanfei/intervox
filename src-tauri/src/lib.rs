@@ -286,11 +286,15 @@ async fn export_dubbed_video(
 
 #[tauri::command]
 async fn prepare_video_for_playback(
+    app: tauri::AppHandle,
     input_path: String,
     output_dir: Option<String>,
 ) -> Result<String, String> {
+    let app_for_progress = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        export::prepare_video_for_playback(input_path, output_dir)
+        export::prepare_video_for_playback_with_progress(input_path, output_dir, move |progress| {
+            let _ = app_for_progress.emit("playback-preview-progress", progress);
+        })
     })
     .await
     .map_err(|error| format!("转码任务异常终止：{error}"))?

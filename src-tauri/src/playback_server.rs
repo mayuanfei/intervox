@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use uuid::Uuid;
@@ -11,7 +11,13 @@ static PLAYBACK_SERVER: OnceLock<Result<PlaybackServer, String>> = OnceLock::new
 
 struct PlaybackServer {
     port: u16,
-    files: Arc<Mutex<HashMap<String, PathBuf>>>,
+    sources: Arc<Mutex<HashMap<String, PlaybackSource>>>,
+}
+
+#[derive(Clone)]
+enum PlaybackSource {
+    File(PathBuf),
+    Directory(PathBuf),
 }
 
 pub fn register_playback_file(path: &Path) -> Result<String, String> {
@@ -25,12 +31,34 @@ pub fn register_playback_file(path: &Path) -> Result<String, String> {
         .map_err(Clone::clone)?;
     let token = Uuid::new_v4().simple().to_string();
     server
-        .files
+        .sources
         .lock()
         .map_err(|_| "播放器媒体服务状态异常。".to_string())?
-        .insert(token.clone(), path.to_path_buf());
+        .insert(token.clone(), PlaybackSource::File(path.to_path_buf()));
 
     Ok(format!("http://127.0.0.1:{}/media/{token}", server.port))
+}
+
+pub fn register_playback_directory(path: &Path, entrypoint: &str) -> Result<String, String> {
+    if !is_safe_relative_path(Path::new(entrypoint)) || !path.join(entrypoint).is_file() {
+        return Err("播放器流媒体入口不存在。".to_string());
+    }
+
+    let server = PLAYBACK_SERVER
+        .get_or_init(PlaybackServer::start)
+        .as_ref()
+        .map_err(Clone::clone)?;
+    let token = Uuid::new_v4().simple().to_string();
+    server
+        .sources
+        .lock()
+        .map_err(|_| "播放器媒体服务状态异常。".to_string())?
+        .insert(token.clone(), PlaybackSource::Directory(path.to_path_buf()));
+
+    Ok(format!(
+        "http://127.0.0.1:{}/media/{token}/{entrypoint}",
+        server.port
+    ))
 }
 
 impl PlaybackServer {
@@ -41,8 +69,8 @@ impl PlaybackServer {
             .local_addr()
             .map_err(|error| format!("无法读取播放器媒体服务端口：{error}"))?
             .port();
-        let files = Arc::new(Mutex::new(HashMap::new()));
-        let server_files = Arc::clone(&files);
+        let sources = Arc::new(Mutex::new(HashMap::new()));
+        let server_sources = Arc::clone(&sources);
 
         thread::Builder::new()
             .name("intervox-playback-server".to_string())
@@ -50,11 +78,11 @@ impl PlaybackServer {
                 for stream in listener.incoming() {
                     match stream {
                         Ok(stream) => {
-                            let files = Arc::clone(&server_files);
+                            let sources = Arc::clone(&server_sources);
                             let _ = thread::Builder::new()
                                 .name("intervox-playback-request".to_string())
                                 .spawn(move || {
-                                    if let Err(error) = handle_request(stream, &files) {
+                                    if let Err(error) = handle_request(stream, &sources) {
                                         eprintln!("[playback_server] {error}");
                                     }
                                 });
@@ -65,13 +93,13 @@ impl PlaybackServer {
             })
             .map_err(|error| format!("无法启动播放器媒体服务线程：{error}"))?;
 
-        Ok(Self { port, files })
+        Ok(Self { port, sources })
     }
 }
 
 fn handle_request(
     mut stream: TcpStream,
-    files: &Arc<Mutex<HashMap<String, PathBuf>>>,
+    sources: &Arc<Mutex<HashMap<String, PlaybackSource>>>,
 ) -> Result<(), String> {
     let mut reader = BufReader::new(
         stream
@@ -106,23 +134,33 @@ fn handle_request(
         return write_error_response(&mut stream, "405 Method Not Allowed");
     }
 
-    let token = request_path
+    let media_path = request_path
         .split('?')
         .next()
         .unwrap_or_default()
         .strip_prefix("/media/")
-        .filter(|token| !token.is_empty() && !token.contains('/'));
-    let Some(token) = token else {
+        .unwrap_or_default();
+    let mut media_parts = media_path.split('/');
+    let token = media_parts.next().unwrap_or_default();
+    if token.is_empty() {
         return write_error_response(&mut stream, "404 Not Found");
-    };
+    }
+    let relative_path = media_parts.collect::<Vec<_>>().join("/");
 
-    let path = files
+    let source = sources
         .lock()
         .map_err(|_| "播放器媒体服务状态异常。".to_string())?
         .get(token)
         .cloned();
-    let Some(path) = path else {
+    let Some(source) = source else {
         return write_error_response(&mut stream, "404 Not Found");
+    };
+    let path = match source {
+        PlaybackSource::File(path) if relative_path.is_empty() => path,
+        PlaybackSource::Directory(path) if is_safe_relative_path(Path::new(&relative_path)) => {
+            path.join(relative_path)
+        }
+        _ => return write_error_response(&mut stream, "404 Not Found"),
     };
 
     let mut file = File::open(&path).map_err(|error| format!("无法打开播放器预览：{error}"))?;
@@ -229,8 +267,17 @@ fn content_type(path: &Path) -> &'static str {
         "wav" => "audio/wav",
         "m4a" => "audio/mp4",
         "mov" => "video/quicktime",
+        "m3u8" => "application/vnd.apple.mpegurl",
+        "ts" => "video/mp2t",
         _ => "video/mp4",
     }
+}
+
+fn is_safe_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 fn write_error_response(stream: &mut TcpStream, status: &str) -> Result<(), String> {
@@ -254,6 +301,17 @@ mod tests {
         assert_eq!(parse_range(Some("bytes=90-"), 100), Ok(Some((90, 99))));
         assert_eq!(parse_range(Some("bytes=-10"), 100), Ok(Some((90, 99))));
         assert_eq!(parse_range(Some("bytes=100-"), 100), Err(()));
+    }
+
+    #[test]
+    fn accepts_only_safe_relative_stream_paths() {
+        assert!(is_safe_relative_path(Path::new("index.m3u8")));
+        assert!(is_safe_relative_path(Path::new(
+            "segments/segment_00001.ts"
+        )));
+        assert!(!is_safe_relative_path(Path::new("")));
+        assert!(!is_safe_relative_path(Path::new("../outside.ts")));
+        assert!(!is_safe_relative_path(Path::new("/absolute.ts")));
     }
 
     #[test]
@@ -281,5 +339,36 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 206 Partial Content\r\n"));
         assert!(response.contains("Content-Range: bytes 2-5/10\r\n"));
         assert!(response.ends_with("\r\n\r\n2345"));
+    }
+
+    #[test]
+    fn serves_registered_hls_segments_with_stream_content_type() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        fs::write(temp_dir.path().join("index.m3u8"), b"#EXTM3U").unwrap();
+        fs::write(temp_dir.path().join("segment_00000.ts"), b"segment-data").unwrap();
+        let url = register_playback_directory(temp_dir.path(), "index.m3u8").unwrap();
+        let address = url
+            .strip_prefix("http://")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        let request_path = url
+            .split_once(address)
+            .unwrap()
+            .1
+            .replace("index.m3u8", "segment_00000.ts");
+        let mut stream = TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "GET {request_path} HTTP/1.1\r\nHost: {address}\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Content-Type: video/mp2t\r\n"));
+        assert!(response.ends_with("\r\n\r\nsegment-data"));
     }
 }

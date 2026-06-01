@@ -8,6 +8,7 @@ import {
   Volume2,
   VolumeX,
   Maximize2,
+  Minimize2,
   FolderOpen,
   ShieldCheck,
   FileVideo,
@@ -15,9 +16,20 @@ import {
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const isAbsoluteFilesystemPath = (value: string) =>
   value.startsWith("/") || value.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(value);
+
+type PlaybackPreviewProgress = {
+  stage: string;
+  input_path: string;
+  processed_ms: number;
+  total_ms: number;
+  progress: number;
+  message?: string;
+};
 
 export function Player() {
   const {
@@ -50,6 +62,8 @@ export function Player() {
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [isPreparingPlayback, setIsPreparingPlayback] = useState(false);
+  const [playbackPreviewProgress, setPlaybackPreviewProgress] = useState<PlaybackPreviewProgress | null>(null);
+  const [isPlayerExpanded, setIsPlayerExpanded] = useState(false);
   const [videoResolution, setVideoResolution] = useState("");
 
   useEffect(() => {
@@ -60,6 +74,49 @@ export function Player() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isPlayerExpanded) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsPlayerExpanded(false);
+        void syncFullscreenMode(false);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+      void syncFullscreenMode(false);
+    };
+  }, [isPlayerExpanded]);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+
+    let isMounted = true;
+    let unlisten: (() => void) | null = null;
+    void listen<PlaybackPreviewProgress>("playback-preview-progress", (event) => {
+      if (!isMounted || event.payload.input_path !== activeMediaInput) return;
+      setPlaybackPreviewProgress(event.payload);
+      if (event.payload.stage === "failed") {
+        setPlayerError(event.payload.message || "播放器后台预览转换失败。");
+        setIsPreparingPlayback(false);
+      }
+    }).then((listener) => {
+      if (isMounted) unlisten = listener;
+      else listener();
+    });
+
+    return () => {
+      isMounted = false;
+      unlisten?.();
+    };
+  }, [activeMediaInput]);
+
   // Resolve media source path safely
   useEffect(() => {
     let isCurrent = true;
@@ -69,6 +126,7 @@ export function Player() {
       setMediaSrc("");
       setPlayerError(null);
       setIsPreparingPlayback(false);
+      setPlaybackPreviewProgress(null);
       setVideoResolution("");
       return;
     }
@@ -79,11 +137,13 @@ export function Player() {
         setMediaSrc("");
         setPlayerError("浏览器预览无法直接读取本机绝对路径。请点击 OPEN FILE 重新选择文件，或使用桌面应用。");
         setIsPreparingPlayback(false);
+        setPlaybackPreviewProgress(null);
         return;
       }
       setMediaSrc(activeMediaInput);
       setPlayerError(null);
       setIsPreparingPlayback(false);
+      setPlaybackPreviewProgress(null);
       return;
     }
 
@@ -91,6 +151,7 @@ export function Player() {
       if (isTauri) {
         try {
           if (isAbsoluteFilesystemPath(activeMediaInput)) {
+            setPlaybackPreviewProgress(null);
             setIsPreparingPlayback(true);
             const playableUrl = await invoke<string>("prepare_video_for_playback", {
               inputPath: activeMediaInput,
@@ -124,6 +185,7 @@ export function Player() {
           setPlayerError("浏览器预览无法直接读取本机绝对路径。请点击 OPEN FILE 重新选择文件，或使用桌面应用。");
         }
         setIsPreparingPlayback(false);
+        setPlaybackPreviewProgress(null);
       }
     };
 
@@ -166,7 +228,7 @@ export function Player() {
 
   // Format seconds to HH:MM:SS
   const formatTime = (seconds: number) => {
-    if (isNaN(seconds)) return "00:00:00";
+    if (!Number.isFinite(seconds)) return "00:00:00";
     const hrs = Math.floor(seconds / 3600);
     const mins = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
@@ -174,6 +236,11 @@ export function Player() {
       .toString()
       .padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
+
+  const effectiveDuration =
+    Number.isFinite(duration) && duration > 0
+      ? duration
+      : (playbackPreviewProgress?.total_ms || 0) / 1000;
 
   const cyclePlaybackRate = () => {
     setPlaybackRate((current) => {
@@ -316,15 +383,31 @@ export function Player() {
     showToast(`Downie 下载队列已加入：${mediaUrl}`, "info");
   };
 
-  const toggleFullscreen = () => {
-    if (!playerContainerRef.current) return;
-    if (!document.fullscreenElement) {
-      playerContainerRef.current.requestFullscreen().catch((err) => {
-        console.error("Error enabling fullscreen:", err);
-      });
-    } else {
-      document.exitFullscreen();
+  async function syncFullscreenMode(expanded: boolean) {
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      try {
+        await getCurrentWindow().setSimpleFullscreen(expanded);
+      } catch (err) {
+        console.error("Error toggling desktop fullscreen:", err);
+      }
+      return;
     }
+
+    try {
+      if (expanded && !document.fullscreenElement) {
+        await playerContainerRef.current?.requestFullscreen();
+      } else if (!expanded && document.fullscreenElement) {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.error("Error toggling browser fullscreen:", err);
+    }
+  }
+
+  const toggleFullscreen = () => {
+    const expanded = !isPlayerExpanded;
+    setIsPlayerExpanded(expanded);
+    void syncFullscreenMode(expanded);
   };
 
   // Compile transcription segments with translated text matching segment ID
@@ -445,8 +528,12 @@ export function Player() {
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             onContextMenu={(e) => e.preventDefault()}
-            className={`aspect-video bg-black border rounded-sm relative overflow-hidden flex flex-col justify-between group shadow-lg transition-colors ${
-              isDragActive ? "border-cyan-400 bg-cyan-500/5" : "th-border"
+            className={`bg-black overflow-hidden flex flex-col justify-between group shadow-lg transition-colors ${
+              isPlayerExpanded
+                ? "fixed inset-0 z-[100] w-screen h-screen"
+                : "aspect-video relative border rounded-sm"
+            } ${
+              isDragActive && !isPlayerExpanded ? "border-cyan-400 bg-cyan-500/5" : "th-border"
             }`}
           >
             {/* Real HTML Video element */}
@@ -505,8 +592,28 @@ export function Player() {
                   Preparing Compatible Preview
                 </span>
                 <p className="text-xs text-cyan-100/80 max-w-[440px] leading-relaxed">
-                  正在将 AV1、H.265 或 MKV 视频转换为播放器兼容的 H.264 预览。首次打开较大的 4K 文件需要等待一段时间。
+                  {playbackPreviewProgress?.stage === "retrying"
+                    ? "硬件编码器暂不可用，正在切换兼容模式生成首个播放片段。"
+                    : "正在生成首个兼容播放片段。AV1 或 H.265 视频会边转边播，无需等待整部视频处理完成。"}
                 </p>
+                {playbackPreviewProgress && playbackPreviewProgress.total_ms > 0 && (
+                  <div className="w-full max-w-[440px] space-y-1.5">
+                    <div className="h-1 bg-slate-800 overflow-hidden rounded-full">
+                      <div
+                        className="h-full bg-cyan-400 transition-all duration-300"
+                        style={{ width: `${Math.max(2, Math.round(playbackPreviewProgress.progress * 100))}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[10px] text-cyan-200/70">
+                      <span>{Math.round(playbackPreviewProgress.progress * 100)}%</span>
+                      <span>
+                        {formatTime(playbackPreviewProgress.processed_ms / 1000)}
+                        {" / "}
+                        {formatTime(playbackPreviewProgress.total_ms / 1000)}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -555,7 +662,7 @@ export function Player() {
                 <input
                   type="range"
                   min="0"
-                  max={duration || 100}
+                  max={effectiveDuration || 100}
                   value={currentTime}
                   onChange={handleTimelineChange}
                   className="w-full accent-cyan-400 h-1 bg-slate-800/80 rounded-lg appearance-none cursor-pointer"
@@ -574,7 +681,7 @@ export function Player() {
                     {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                   </button>
                   <span className="text-[11px] th-text font-bold">
-                    {formatTime(currentTime)} <span className="text-slate-700">/</span> {formatTime(duration)}
+                    {formatTime(currentTime)} <span className="text-slate-700">/</span> {formatTime(effectiveDuration)}
                   </span>
                 </div>
 
@@ -610,8 +717,12 @@ export function Player() {
                     {playbackRate.toFixed(1)}x
                   </button>
 
-                  <button onClick={toggleFullscreen} className="hover:text-cyan-400 transition-colors">
-                    <Maximize2 className="w-4 h-4" />
+                  <button
+                    onClick={toggleFullscreen}
+                    className="hover:text-cyan-400 transition-colors"
+                    title={isPlayerExpanded ? "退出全屏" : "全屏播放"}
+                  >
+                    {isPlayerExpanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
