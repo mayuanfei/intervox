@@ -249,11 +249,17 @@ fn validate_tts_cache(tts: TtsDocument) -> bool {
 }
 
 #[tauri::command]
-async fn export_dubbed_video(request: ExportRequest) -> Result<ExportResult, String> {
+async fn export_dubbed_video(
+    app: tauri::AppHandle,
+    request: ExportRequest,
+) -> Result<ExportResult, String> {
     eprintln!("[export_dubbed_video] 开始");
+    let app_for_progress = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            export::export_video(request)
+            export::export_video_with_progress(request, move |progress| {
+                let _ = app_for_progress.emit("export-progress", progress);
+            })
         }))
     })
     .await

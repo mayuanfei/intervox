@@ -160,9 +160,16 @@ const IntervoxContext = createContext<IntervoxContextType | undefined>(undefined
 
 // Cache Helpers
 const ASR_CACHE_PREFIX = "intervox:asr:v2:";
-const TRANSLATION_CACHE_PREFIX = "intervox:translation:v2:";
-const TTS_CACHE_PREFIX = "intervox:tts:v1:";
+const TRANSLATION_CACHE_PREFIX = "intervox:translation:v3:";
+const TTS_CACHE_PREFIX = "intervox:tts:v2:";
 const OUTPUT_DIR_STORAGE_KEY = "intervox_output_dir";
+
+function formatDuration(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 
 function hashString(value: string) {
   let hash = 5381;
@@ -533,6 +540,24 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       else unlisten();
     });
 
+    void listen<any>("export-progress", (event) => {
+      if (!isMounted) return;
+      const { stage, processed_ms = 0, total_ms = 0, progress = 0 } = event.payload;
+      const percent = Math.round(progress * 100);
+      const statusStr = stage === "completed"
+        ? "输出视频生成完成。"
+        : `FFmpeg 正在生成输出视频：${percent}%（${formatDuration(processed_ms)} / ${formatDuration(total_ms)}）`;
+      setExportStatus(statusStr);
+      updateActiveTaskStage(
+        stage === "completed" ? "final_output" : "mix_media",
+        progress,
+        stage === "started" || stage === "completed" ? statusStr : undefined,
+      );
+    }).then((unlisten) => {
+      if (isMounted) unlisteners.push(unlisten);
+      else unlisten();
+    });
+
     return () => {
       isMounted = false;
       unlisteners.forEach((unlisten) => unlisten());
@@ -828,7 +853,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
       if (activeTranslationCacheKey && activeAsrCacheKey) {
         writeLocalJson(`${TRANSLATION_CACHE_PREFIX}${activeTranslationCacheKey}`, {
-          version: 1,
+          version: 2,
           cache_key: activeTranslationCacheKey,
           asr_cache_key: activeAsrCacheKey,
           target_language: result.target_language,
@@ -913,7 +938,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
     setIsExporting(true);
     setExportError(null);
-    setExportStatus("FFmpeg 启动混合轨道...");
+    setExportStatus("FFmpeg 正在生成输出视频。较长视频转码需要几分钟，请保持应用运行。");
 
     try {
       const result = await invokeOrFallback<ExportResult>(
@@ -1110,7 +1135,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         );
         // Write Translation Cache
         writeLocalJson(`${TRANSLATION_CACHE_PREFIX}${translationCacheKey}`, {
-          version: 1,
+          version: 2,
           cache_key: translationCacheKey,
           asr_cache_key: asrCacheKey,
           target_language: translateResult.target_language,
@@ -1174,7 +1199,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
           }
         );
         writeLocalJson(`${TTS_CACHE_PREFIX}${ttsCacheKey}`, {
-          version: 1,
+          version: 2,
           cache_key: ttsCacheKey,
           translation_cache_key: translationCacheKey,
           updated_at: new Date().toISOString(),
@@ -1183,7 +1208,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       }
 
       setTts(ttsResult);
-      updateActiveTaskStage("mix_media", 0.5, "声轨合成结束。开始 FFmpeg 轨道混合生成输出视频。");
+      updateActiveTaskStage("mix_media", 0.5, "声轨合成结束。FFmpeg 正在生成输出视频；较长视频转码需要几分钟，请保持应用运行。");
       await new Promise((r) => setTimeout(r, 800));
 
       // Step 5: Export Video

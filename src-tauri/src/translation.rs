@@ -1,4 +1,6 @@
-use crate::asr::{AsrProviderId, BailianDeployment, TargetLanguageCode, TranscriptDocument};
+use crate::asr::{
+    AsrProviderId, BailianDeployment, TargetLanguageCode, TranscriptDocument, TranscriptSegment,
+};
 use crate::credentials::{CredentialError, CredentialStore};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -8,13 +10,17 @@ use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
-const LLM_TRANSLATION_BATCH_SIZE: usize = 20;
+const LLM_TRANSLATION_BATCH_SIZE: usize = 8;
+const LLM_TRANSLATION_RETRY_BATCH_SIZE: usize = 4;
 const VOLC_SPEECH_MT_BATCH_SIZE: usize = 16;
 const TRANSLATION_TIMEOUT_SECS: u64 = 180;
 const VOLC_SPEECH_MT_URL: &str =
     "https://openspeech.bytedance.com/api/v3/machine_translation/matx_translate";
 const VOLC_SPEECH_MT_RESOURCE_ID: &str = "volc.speech.mt";
 const VOLC_SPEECH_MT_SUCCESS_CODE: i64 = 20_000_000;
+const TRANSLATION_MERGE_MAX_GAP_MS: u64 = 500;
+const TRANSLATION_MERGE_MAX_DURATION_MS: u64 = 8_000;
+const TRANSLATION_MERGE_MAX_CHARS: usize = 220;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TranslationBackend {
@@ -128,6 +134,21 @@ where
         return Err(TranslationError::EmptyTranscript);
     }
 
+    let merged_segments = merge_transcript_segments(&request.transcript.segments);
+    if merged_segments.is_empty() {
+        return Err(TranslationError::EmptyTranscript);
+    }
+    let request = TranslationRequest {
+        transcript: TranscriptDocument {
+            source_language: request.transcript.source_language,
+            target_language: request.transcript.target_language,
+            provider: request.transcript.provider,
+            segments: merged_segments,
+        },
+        model: request.model,
+        deployment: request.deployment,
+    };
+
     let backend = TranslationBackend::from_model(&request.model);
     let batch_size = backend.batch_size();
     let api_key = credentials
@@ -162,9 +183,8 @@ where
             model: request.model.clone(),
             deployment: request.deployment.clone(),
         };
-        let response = request_translation_batch(&client, &api_key, &batch_request, backend)?;
-        let batch_document = parse_translation_response(&batch_request, &response);
-        ensure_translation_complete(&batch_document)?;
+        let batch_document =
+            request_complete_translation_batch(&client, &api_key, &batch_request, backend)?;
         segments.extend(batch_document.segments);
         let completed_batches = batch_index + 1;
         let completed_segments = segments.len();
@@ -193,6 +213,196 @@ where
         provider: backend.document_provider().to_string(),
         segments,
     })
+}
+
+fn request_complete_translation_batch(
+    client: &Client,
+    api_key: &str,
+    request: &TranslationRequest,
+    backend: TranslationBackend,
+) -> Result<TranslationDocument, TranslationError> {
+    let mut document = request_translation_document(client, api_key, request, backend)?;
+    if ensure_translation_complete(&document).is_ok() {
+        return Ok(document);
+    }
+
+    let missing_segments = missing_transcript_segments(request, &document);
+    for segments in missing_segments.chunks(LLM_TRANSLATION_RETRY_BATCH_SIZE) {
+        let retry_request = translation_request_with_segments(request, segments.to_vec());
+        if let Ok(retry_document) =
+            request_translation_document(client, api_key, &retry_request, backend)
+        {
+            merge_translation_segments(&mut document, retry_document);
+        }
+    }
+
+    for segment in missing_transcript_segments(request, &document) {
+        let retry_request = translation_request_with_segments(request, vec![segment]);
+        let retry_document =
+            request_translation_document(client, api_key, &retry_request, backend)?;
+        merge_translation_segments(&mut document, retry_document);
+    }
+
+    ensure_translation_complete(&document)?;
+    Ok(document)
+}
+
+fn request_translation_document(
+    client: &Client,
+    api_key: &str,
+    request: &TranslationRequest,
+    backend: TranslationBackend,
+) -> Result<TranslationDocument, TranslationError> {
+    let response = request_translation_batch(client, api_key, request, backend)?;
+    Ok(parse_translation_response(request, &response))
+}
+
+fn missing_transcript_segments(
+    request: &TranslationRequest,
+    document: &TranslationDocument,
+) -> Vec<TranscriptSegment> {
+    request
+        .transcript
+        .segments
+        .iter()
+        .filter(|segment| {
+            document
+                .segments
+                .iter()
+                .find(|translation| translation.id == segment.id)
+                .is_none_or(|translation| translation.translated_text.trim().is_empty())
+        })
+        .cloned()
+        .collect()
+}
+
+fn translation_request_with_segments(
+    request: &TranslationRequest,
+    segments: Vec<TranscriptSegment>,
+) -> TranslationRequest {
+    TranslationRequest {
+        transcript: TranscriptDocument {
+            source_language: request.transcript.source_language.clone(),
+            target_language: request.transcript.target_language.clone(),
+            provider: request.transcript.provider,
+            segments,
+        },
+        model: request.model.clone(),
+        deployment: request.deployment.clone(),
+    }
+}
+
+fn merge_translation_segments(
+    document: &mut TranslationDocument,
+    retry_document: TranslationDocument,
+) {
+    for retry_segment in retry_document.segments {
+        if retry_segment.translated_text.trim().is_empty() {
+            continue;
+        }
+        if let Some(segment) = document
+            .segments
+            .iter_mut()
+            .find(|segment| segment.id == retry_segment.id)
+        {
+            segment.translated_text = retry_segment.translated_text;
+        }
+    }
+}
+
+fn merge_transcript_segments(segments: &[TranscriptSegment]) -> Vec<TranscriptSegment> {
+    let mut merged = Vec::new();
+    let mut current: Option<TranscriptSegment> = None;
+
+    for segment in segments
+        .iter()
+        .filter(|segment| !segment.text.trim().is_empty())
+    {
+        match current.take() {
+            Some(mut current_segment)
+                if should_merge_transcript_segments(&current_segment, segment) =>
+            {
+                current_segment.end_ms = current_segment.end_ms.max(segment.end_ms);
+                current_segment.text = join_transcript_text(&current_segment.text, &segment.text);
+                current_segment.confidence =
+                    merge_confidence(current_segment.confidence, segment.confidence);
+                current = Some(current_segment);
+            }
+            Some(current_segment) => {
+                merged.push(current_segment);
+                current = Some(segment.clone());
+            }
+            None => current = Some(segment.clone()),
+        }
+    }
+
+    if let Some(current_segment) = current {
+        merged.push(current_segment);
+    }
+
+    merged
+}
+
+fn should_merge_transcript_segments(current: &TranscriptSegment, next: &TranscriptSegment) -> bool {
+    let gap_ms = next.start_ms.saturating_sub(current.end_ms);
+    let duration_ms = next.end_ms.saturating_sub(current.start_ms);
+    let chars = current.text.chars().count() + next.text.chars().count();
+
+    current.speaker_id == next.speaker_id
+        && gap_ms <= TRANSLATION_MERGE_MAX_GAP_MS
+        && duration_ms <= TRANSLATION_MERGE_MAX_DURATION_MS
+        && chars <= TRANSLATION_MERGE_MAX_CHARS
+        && !ends_sentence_before(&current.text, &next.text)
+}
+
+fn ends_sentence_before(current: &str, next: &str) -> bool {
+    let current = current.trim_end().trim_end_matches(|character: char| {
+        matches!(character, '"' | '\'' | ')' | ']' | '”' | '’' | '）' | '】')
+    });
+    let Some(last) = current.chars().last() else {
+        return false;
+    };
+
+    if last == '.' && is_numeric_continuation(current, next) {
+        return false;
+    }
+
+    matches!(last, '.' | '!' | '?' | '。' | '！' | '？')
+}
+
+fn is_numeric_continuation(current: &str, next: &str) -> bool {
+    current
+        .trim_end_matches('.')
+        .chars()
+        .last()
+        .is_some_and(|character| character.is_ascii_digit())
+        && next
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+}
+
+fn join_transcript_text(current: &str, next: &str) -> String {
+    let current = current.trim_end();
+    let next = next.trim_start();
+    if is_numeric_continuation(current, next) {
+        return format!("{current}{next}");
+    }
+
+    let separator = match (current.chars().last(), next.chars().next()) {
+        (Some(left), Some(right)) if left.is_ascii() || right.is_ascii() => " ",
+        _ => "",
+    };
+    format!("{current}{separator}{next}")
+}
+
+fn merge_confidence(current: Option<f32>, next: Option<f32>) -> Option<f32> {
+    match (current, next) {
+        (Some(current), Some(next)) => Some(current.min(next)),
+        (Some(confidence), None) | (None, Some(confidence)) => Some(confidence),
+        (None, None) => None,
+    }
 }
 
 fn ensure_translation_complete(document: &TranslationDocument) -> Result<(), TranslationError> {
@@ -496,8 +706,9 @@ fn build_translation_prompt(request: &TranslationRequest) -> String {
         .collect();
 
     format!(
-        "目标语言：{}。\n请翻译 segments，每个 id 必须原样返回。返回格式：{{\"segments\":[{{\"id\":\"...\",\"translated_text\":\"...\"}}]}}。\nsegments: {}",
+        "目标语言：{}。\n请翻译 segments。必须返回恰好 {} 个 segments，每个 id 必须原样返回，不得省略。返回格式：{{\"segments\":[{{\"id\":\"...\",\"translated_text\":\"...\"}}]}}。\nsegments: {}",
         request.transcript.target_language.display_name(),
+        segments.len(),
         Value::Array(segments)
     )
 }
@@ -583,6 +794,47 @@ mod tests {
         assert_eq!(backend, TranslationBackend::VolcSpeechMt);
         assert_eq!(backend.credential_provider(), AsrProviderId::VolcDoubao);
         assert_eq!(backend.batch_size(), 16);
+    }
+
+    #[test]
+    fn llm_translation_uses_smaller_batches_for_longer_merged_segments() {
+        assert_eq!(TranslationBackend::AliyunQwen.batch_size(), 8);
+        assert_eq!(TranslationBackend::VolcArk.batch_size(), 8);
+    }
+
+    #[test]
+    fn transcript_fragments_are_merged_into_sentence_before_translation() {
+        let request = volc_speech_request(
+            SourceLanguageCode::EnUs,
+            &[
+                "Anthropic released Opus 4.",
+                "8, which they say is advanced.",
+                "Next sentence.",
+            ],
+        );
+
+        let merged = merge_transcript_segments(&request.transcript.segments);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            merged[0].text,
+            "Anthropic released Opus 4.8, which they say is advanced."
+        );
+        assert_eq!(merged[0].start_ms, 0);
+        assert_eq!(merged[0].end_ms, 2_000);
+        assert_eq!(merged[1].text, "Next sentence.");
+    }
+
+    #[test]
+    fn transcript_fragments_are_not_merged_across_long_pause() {
+        let mut request =
+            volc_speech_request(SourceLanguageCode::EnUs, &["First half", "continues here."]);
+        request.transcript.segments[1].start_ms = 2_000;
+        request.transcript.segments[1].end_ms = 3_000;
+
+        let merged = merge_transcript_segments(&request.transcript.segments);
+
+        assert_eq!(merged.len(), 2);
     }
 
     #[test]
@@ -694,6 +946,40 @@ mod tests {
 
         assert_eq!(document.segments[0].translated_text, "你好，世界");
         assert_eq!(document.segments[0].source_text, "Hello world");
+    }
+
+    #[test]
+    fn retry_merge_fills_only_missing_translation_segments() {
+        let request = volc_speech_request(SourceLanguageCode::EnUs, &["Hello", "World"]);
+        let mut document = parse_translation_response(
+            &request,
+            &json!({
+                "segments": [{
+                    "id": "seg_0",
+                    "translated_text": "你好"
+                }]
+            }),
+        );
+
+        let missing = missing_transcript_segments(&request, &document);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].id, "seg_1");
+
+        let retry_request = translation_request_with_segments(&request, missing);
+        let retry_document = parse_translation_response(
+            &retry_request,
+            &json!({
+                "segments": [{
+                    "id": "seg_1",
+                    "translated_text": "世界"
+                }]
+            }),
+        );
+        merge_translation_segments(&mut document, retry_document);
+
+        ensure_translation_complete(&document).unwrap();
+        assert_eq!(document.segments[0].translated_text, "你好");
+        assert_eq!(document.segments[1].translated_text, "世界");
     }
 
     #[test]

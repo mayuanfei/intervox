@@ -25,6 +25,7 @@ export function Tasks() {
   const activeTask = tasks.find((t) => t.status === "running") || tasks.find((t) => t.status === "queued" && activeTaskId === t.id);
   const queuedTasks = tasks.filter((t) => t.status === "queued" && t.id !== activeTask?.id);
   const finishedTasks = tasks.filter((t) => t.status === "completed" || t.status === "failed");
+  const isExporting = activeTask?.status === "running" && activeTask.stage === "mix_media";
 
   // Pipeline stage icons and names helper
   const pipelineStages = [
@@ -121,7 +122,9 @@ export function Tasks() {
                 </>
               )}
               <div className="text-[11px] th-text-muted">
-                ETA: <span className="text-cyan-400 font-bold">02:14:09</span>
+                STATE: <span className="text-cyan-400 font-bold">
+                  {activeTask.status === "queued" ? "WAITING" : isExporting ? "FFMPEG WORKING" : "PROCESSING"}
+                </span>
               </div>
             </div>
           </div>
@@ -183,11 +186,13 @@ export function Tasks() {
               <span className="th-text-2">
                 {activeTask.logLines[activeTask.logLines.length - 1] || "Transcribing audio segments..."}
               </span>
-              <span className="text-cyan-400 font-bold">{Math.round(activeTask.progress * 100)}%</span>
+              <span className="text-cyan-400 font-bold">
+                {Math.round(activeTask.progress * 100)}%
+              </span>
             </div>
             <div className="h-1.5 bg-slate-800/80 rounded-full overflow-hidden">
               <div
-                className="h-full bg-cyan-400 rounded-full transition-all duration-300 border-glow"
+                className={`h-full bg-cyan-400 rounded-full transition-all duration-300 border-glow ${isExporting ? "animate-pulse" : ""}`}
                 style={{ width: `${activeTask.progress * 100}%` }}
               />
             </div>

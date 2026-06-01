@@ -1,19 +1,33 @@
 use crate::translation::TranslationDocument;
-use crate::tts::TtsDocument;
+use crate::tts::{TtsDocument, TtsSegment};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
 use thiserror::Error;
 
 const MIN_SEGMENT_SLOT_MS: u64 = 350;
 const SEGMENT_FIT_PADDING_MS: u64 = 80;
-const MAX_TEMPO: f32 = 3.0;
-const MAX_ENGLISH_SUBTITLE_WIDTH: usize = 36;
-const MAX_TARGET_SUBTITLE_WIDTH: usize = 28;
+const MAX_TEMPO: f32 = 1.5;
 const PLAYBACK_CACHE_VERSION: &str = "v4-primary-stream-preview";
 const MAX_VOICEOVER_INPUTS_PER_COMMAND: usize = 100;
+
+#[derive(Debug, Clone, Copy)]
+struct VoiceoverTiming {
+    tts_ms: u64,
+    tempo: f32,
+    scheduled_start_ms: u64,
+    scheduled_end_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubtitleTiming {
+    id: String,
+    start_ms: u64,
+    end_ms: u64,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ExportRequest {
@@ -40,6 +54,14 @@ pub struct ExportResult {
     pub video_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportProgress {
+    pub stage: String,
+    pub processed_ms: u64,
+    pub total_ms: u64,
+    pub progress: f32,
+}
+
 #[derive(Debug, Error)]
 pub enum ExportError {
     #[error("原视频 URL 不能为空。")]
@@ -54,7 +76,18 @@ pub enum ExportError {
     Io(#[from] std::io::Error),
 }
 
+#[allow(dead_code)]
 pub fn export_video(request: ExportRequest) -> Result<ExportResult, ExportError> {
+    export_video_with_progress(request, |_| {})
+}
+
+pub fn export_video_with_progress<F>(
+    request: ExportRequest,
+    mut on_progress: F,
+) -> Result<ExportResult, ExportError>
+where
+    F: FnMut(ExportProgress),
+{
     if request.media_url.trim().is_empty() {
         return Err(ExportError::MissingMediaUrl);
     }
@@ -67,8 +100,15 @@ pub fn export_video(request: ExportRequest) -> Result<ExportResult, ExportError>
     fs::create_dir_all(&output_dir)?;
     let voiceover_path = output_dir.join("voiceover.wav");
     let video_path = output_dir.join("dubbed.mp4");
-    build_voiceover(&request.tts, &output_dir, &voiceover_path)?;
-    let subtitle_path = write_subtitles(request.subtitles.as_ref(), &output_dir)?;
+    let timings = schedule_voiceover_segments(&request.tts.segments)?;
+    build_voiceover(&request.tts, &timings, &output_dir, &voiceover_path)?;
+    let subtitle_timings = subtitle_timings(&request.tts, &timings);
+    let subtitle_path =
+        write_subtitles(request.subtitles.as_ref(), &subtitle_timings, &output_dir)?;
+    let total_ms = probe_media_duration_ms(&request.media_url)
+        .or_else(|| wav_duration_ms(&voiceover_path).ok())
+        .unwrap_or(0);
+    on_progress(export_progress("started", 0, total_ms));
     mux_video(
         &request.media_url,
         &voiceover_path,
@@ -77,7 +117,10 @@ pub fn export_video(request: ExportRequest) -> Result<ExportResult, ExportError>
         request.original_audio_volume.unwrap_or(0.25),
         request.voiceover_volume.unwrap_or(1.0),
         subtitle_path.as_deref(),
+        total_ms,
+        |processed_ms| on_progress(export_progress("muxing", processed_ms, total_ms)),
     )?;
+    on_progress(export_progress("completed", total_ms, total_ms));
 
     Ok(ExportResult {
         voiceover_path: voiceover_path.to_string_lossy().to_string(),
@@ -85,8 +128,23 @@ pub fn export_video(request: ExportRequest) -> Result<ExportResult, ExportError>
     })
 }
 
+fn export_progress(stage: &str, processed_ms: u64, total_ms: u64) -> ExportProgress {
+    let progress = if total_ms == 0 {
+        0.0
+    } else {
+        processed_ms.min(total_ms) as f32 / total_ms as f32
+    };
+    ExportProgress {
+        stage: stage.to_string(),
+        processed_ms,
+        total_ms,
+        progress,
+    }
+}
+
 fn write_subtitles(
     options: Option<&SubtitleOptions>,
+    timings: &[SubtitleTiming],
     output_dir: &Path,
 ) -> Result<Option<PathBuf>, ExportError> {
     let Some(options) =
@@ -96,196 +154,45 @@ fn write_subtitles(
     };
 
     let subtitle_path = output_dir.join("subtitles.srt");
-    fs::write(&subtitle_path, build_subtitle_srt(options))?;
+    fs::write(&subtitle_path, build_subtitle_srt(options, timings))?;
     Ok(Some(subtitle_path))
 }
 
-fn build_subtitle_srt(options: &SubtitleOptions) -> String {
+fn build_subtitle_srt(options: &SubtitleOptions, timings: &[SubtitleTiming]) -> String {
     let mut subtitles = String::new();
     let mut subtitle_index = 1;
     for segment in &options.translation.segments {
-        let mut english_chunks = if options.show_english {
-            split_subtitle_lines(&segment.source_text, MAX_ENGLISH_SUBTITLE_WIDTH)
-        } else {
-            Vec::new()
-        };
-        let mut target_chunks = if options.show_target_language {
-            split_subtitle_lines(&segment.translated_text, MAX_TARGET_SUBTITLE_WIDTH)
-        } else {
-            Vec::new()
-        };
-        let cue_count = english_chunks.len().max(target_chunks.len());
-
-        if cue_count == 0 {
+        let mut lines = Vec::with_capacity(2);
+        if options.show_english {
+            lines.push(normalize_subtitle_text(&segment.source_text));
+        }
+        if options.show_target_language {
+            lines.push(normalize_subtitle_text(&segment.translated_text));
+        }
+        lines.retain(|line| !line.is_empty());
+        if lines.is_empty() {
             continue;
         }
 
-        balance_subtitle_chunks(&mut english_chunks, cue_count);
-        balance_subtitle_chunks(&mut target_chunks, cue_count);
-        let duration_ms = segment.end_ms.max(segment.start_ms + 10) - segment.start_ms;
-
-        for cue_index in 0..cue_count {
-            let mut lines = Vec::with_capacity(2);
-            if let Some(text) = english_chunks.get(cue_index) {
-                lines.push(escape_srt_text(text));
-            }
-            if let Some(text) = target_chunks.get(cue_index) {
-                lines.push(escape_srt_text(text));
-            }
-            if lines.is_empty() {
-                continue;
-            }
-
-            let start_ms = segment.start_ms + (duration_ms * cue_index as u64 / cue_count as u64);
-            let end_ms =
-                segment.start_ms + (duration_ms * (cue_index + 1) as u64 / cue_count as u64);
-            subtitles.push_str(&format!(
-                "{subtitle_index}\n{} --> {}\n{}\n\n",
-                srt_timestamp(start_ms),
-                srt_timestamp(end_ms),
-                lines.join("\n")
-            ));
-            subtitle_index += 1;
-        }
+        let (start_ms, end_ms) = timings
+            .iter()
+            .find(|timing| timing.id == segment.id)
+            .map(|timing| (timing.start_ms, timing.end_ms))
+            .unwrap_or((segment.start_ms, segment.end_ms.max(segment.start_ms + 10)));
+        subtitles.push_str(&format!(
+            "{subtitle_index}\n{} --> {}\n{}\n\n",
+            srt_timestamp(start_ms),
+            srt_timestamp(end_ms.max(start_ms + 10)),
+            lines.join("\n")
+        ));
+        subtitle_index += 1;
     }
 
     subtitles
 }
 
-fn split_subtitle_lines(text: &str, max_width: usize) -> Vec<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        return Vec::new();
-    }
-
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-    for word in normalized
-        .split(' ')
-        .flat_map(|word| split_long_word(word, max_width))
-    {
-        let separator_width = usize::from(!current_line.is_empty());
-        if !current_line.is_empty()
-            && subtitle_visual_width(&current_line) + separator_width + subtitle_visual_width(&word)
-                > max_width
-        {
-            lines.push(current_line);
-            current_line = String::new();
-        }
-
-        if !current_line.is_empty() {
-            current_line.push(' ');
-        }
-        current_line.push_str(&word);
-    }
-
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-    lines
-}
-
-fn split_long_word(word: &str, max_width: usize) -> Vec<String> {
-    if subtitle_visual_width(word) <= max_width {
-        return vec![word.to_string()];
-    }
-
-    let mut chunks = Vec::new();
-    let mut current_chunk = String::new();
-    let mut current_width = 0;
-    for character in word.chars() {
-        let character_width = subtitle_character_width(character);
-        if current_width > 0 && current_width + character_width > max_width {
-            chunks.push(current_chunk);
-            current_chunk = String::new();
-            current_width = 0;
-        }
-        current_chunk.push(character);
-        current_width += character_width;
-    }
-
-    if !current_chunk.is_empty() {
-        chunks.push(current_chunk);
-    }
-    chunks
-}
-
-fn balance_subtitle_chunks(chunks: &mut Vec<String>, cue_count: usize) {
-    while !chunks.is_empty() && chunks.len() < cue_count {
-        let Some((split_index, _)) = chunks
-            .iter()
-            .enumerate()
-            .filter_map(|(index, text)| split_subtitle_line(text).map(|_| (index, text)))
-            .max_by_key(|(_, text)| subtitle_visual_width(text))
-        else {
-            break;
-        };
-
-        let Some((left, right)) = split_subtitle_line(&chunks[split_index]) else {
-            break;
-        };
-        chunks.splice(split_index..=split_index, [left, right]);
-    }
-}
-
-fn split_subtitle_line(text: &str) -> Option<(String, String)> {
-    let words = text.split_whitespace().collect::<Vec<_>>();
-    if words.len() > 1 {
-        let split_index = best_subtitle_word_split(&words);
-        return Some((
-            words[..split_index].join(" "),
-            words[split_index..].join(" "),
-        ));
-    }
-
-    let characters = text.chars().collect::<Vec<_>>();
-    if characters.len() < 2 {
-        return None;
-    }
-    let target_width = subtitle_visual_width(text).div_ceil(2);
-    let mut split_index = 1;
-    let mut width = 0;
-    for (index, character) in characters.iter().enumerate().take(characters.len() - 1) {
-        width += subtitle_character_width(*character);
-        split_index = index + 1;
-        if width >= target_width {
-            break;
-        }
-    }
-
-    Some((
-        characters[..split_index].iter().collect(),
-        characters[split_index..].iter().collect(),
-    ))
-}
-
-fn best_subtitle_word_split(words: &[&str]) -> usize {
-    let total_width = subtitle_visual_width(&words.join(" "));
-    let target_width = total_width.div_ceil(2);
-    let mut best_index = 1;
-    let mut best_distance = usize::MAX;
-
-    for index in 1..words.len() {
-        let width = subtitle_visual_width(&words[..index].join(" "));
-        let distance = width.abs_diff(target_width);
-        if distance < best_distance {
-            best_index = index;
-            best_distance = distance;
-        }
-    }
-    best_index
-}
-
-fn subtitle_visual_width(text: &str) -> usize {
-    text.chars().map(subtitle_character_width).sum()
-}
-
-fn subtitle_character_width(character: char) -> usize {
-    if character.is_ascii() {
-        1
-    } else {
-        2
-    }
+fn normalize_subtitle_text(text: &str) -> String {
+    escape_srt_text(&text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 fn srt_timestamp(milliseconds: u64) -> String {
@@ -407,35 +314,37 @@ fn winget_ffmpeg_path() -> Option<PathBuf> {
 
 fn build_voiceover(
     tts: &TtsDocument,
+    timings: &[VoiceoverTiming],
     output_dir: &Path,
     voiceover_path: &Path,
 ) -> Result<(), ExportError> {
     let filter_path = output_dir.join("voiceover.filter.txt");
     let timeline_path = output_dir.join("voiceover.timeline.tsv");
-    fs::write(&timeline_path, build_voiceover_timeline(tts)?)?;
+    fs::write(&timeline_path, build_voiceover_timeline(tts, &timings))?;
 
     if tts.segments.len() <= MAX_VOICEOVER_INPUTS_PER_COMMAND {
-        fs::write(&filter_path, build_voiceover_filter(tts)?)?;
+        fs::write(&filter_path, build_voiceover_filter(tts, &timings))?;
         return mix_voiceover_segments(&tts.segments, 0, &filter_path, voiceover_path);
     }
 
     let mut batch_outputs = Vec::new();
+    let mut timing_offset = 0;
     for (batch_index, segments) in tts
         .segments
         .chunks(MAX_VOICEOVER_INPUTS_PER_COMMAND)
         .enumerate()
     {
-        let batch_start_ms = segments
-            .iter()
-            .map(|segment| segment.start_ms)
-            .min()
+        let batch_timings = &timings[timing_offset..timing_offset + segments.len()];
+        let batch_start_ms = batch_timings
+            .first()
+            .map(|timing| timing.scheduled_start_ms)
             .unwrap_or(0);
         let batch_filter_path =
             output_dir.join(format!("voiceover.batch.{batch_index:03}.filter.txt"));
         let batch_output_path = output_dir.join(format!("voiceover.batch.{batch_index:03}.wav"));
         fs::write(
             &batch_filter_path,
-            build_voiceover_filter_for_segments(segments, batch_start_ms)?,
+            build_voiceover_filter_for_segments(segments, batch_timings, batch_start_ms),
         )?;
         mix_voiceover_segments(
             segments,
@@ -444,6 +353,7 @@ fn build_voiceover(
             &batch_output_path,
         )?;
         batch_outputs.push((batch_start_ms, batch_output_path));
+        timing_offset += segments.len();
     }
 
     fs::write(&filter_path, build_voiceover_batch_filter(&batch_outputs))?;
@@ -473,25 +383,21 @@ fn build_voiceover(
     result
 }
 
-fn build_voiceover_filter(tts: &TtsDocument) -> Result<String, ExportError> {
-    build_voiceover_filter_for_segments(&tts.segments, 0)
+fn build_voiceover_filter(tts: &TtsDocument, timings: &[VoiceoverTiming]) -> String {
+    build_voiceover_filter_for_segments(&tts.segments, timings, 0)
 }
 
 fn build_voiceover_filter_for_segments(
-    segments: &[crate::tts::TtsSegment],
+    segments: &[TtsSegment],
+    timings: &[VoiceoverTiming],
     offset_ms: u64,
-) -> Result<String, ExportError> {
+) -> String {
     let mut filters = Vec::with_capacity(segments.len() + 1);
-    for (index, segment) in segments.iter().enumerate() {
-        let tempo = segment_tempo(
-            segment.start_ms,
-            segment.end_ms,
-            Path::new(&segment.audio_path),
-        )?;
+    for (index, timing) in timings.iter().enumerate() {
         filters.push(segment_filter(
             index,
-            segment.start_ms.saturating_sub(offset_ms),
-            tempo,
+            timing.scheduled_start_ms.saturating_sub(offset_ms),
+            timing.tempo,
         ));
     }
 
@@ -502,11 +408,11 @@ fn build_voiceover_filter_for_segments(
         "{inputs}amix=inputs={}:duration=longest:normalize=0[aout]",
         segments.len()
     ));
-    Ok(filters.join(";"))
+    filters.join(";")
 }
 
 fn mix_voiceover_segments(
-    segments: &[crate::tts::TtsSegment],
+    segments: &[TtsSegment],
     offset_ms: u64,
     filter_path: &Path,
     output_path: &Path,
@@ -550,18 +456,25 @@ fn build_voiceover_batch_filter(batch_outputs: &[(u64, PathBuf)]) -> String {
     filters.join(";")
 }
 
-fn build_voiceover_timeline(tts: &TtsDocument) -> Result<String, ExportError> {
-    let mut lines = vec!["index\tid\tstart_ms\tend_ms\ttts_ms\ttempo\taudio_path".to_string()];
-    for (index, segment) in tts.segments.iter().enumerate() {
-        let audio_path = Path::new(&segment.audio_path);
-        let tts_ms = wav_duration_ms(audio_path)?;
-        let tempo = fit_tempo(segment.start_ms, segment.end_ms, tts_ms);
+fn build_voiceover_timeline(tts: &TtsDocument, timings: &[VoiceoverTiming]) -> String {
+    let mut lines = vec![
+        "index\tid\tstart_ms\tend_ms\ttts_ms\ttempo\tscheduled_start_ms\tscheduled_end_ms\taudio_path"
+            .to_string(),
+    ];
+    for (index, (segment, timing)) in tts.segments.iter().zip(timings).enumerate() {
         lines.push(format!(
-            "{index}\t{}\t{}\t{}\t{}\t{tempo:.3}\t{}",
-            segment.id, segment.start_ms, segment.end_ms, tts_ms, segment.audio_path
+            "{index}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}",
+            segment.id,
+            segment.start_ms,
+            segment.end_ms,
+            timing.tts_ms,
+            timing.tempo,
+            timing.scheduled_start_ms,
+            timing.scheduled_end_ms,
+            segment.audio_path
         ));
     }
-    Ok(lines.join("\n"))
+    lines.join("\n")
 }
 
 fn segment_filter(index: usize, start_ms: u64, tempo: f32) -> String {
@@ -574,8 +487,45 @@ fn segment_filter(index: usize, start_ms: u64, tempo: f32) -> String {
     filter
 }
 
-fn segment_tempo(start_ms: u64, end_ms: u64, audio_path: &Path) -> Result<f32, ExportError> {
-    Ok(fit_tempo(start_ms, end_ms, wav_duration_ms(audio_path)?))
+fn schedule_voiceover_segments(
+    segments: &[TtsSegment],
+) -> Result<Vec<VoiceoverTiming>, ExportError> {
+    let mut timings = Vec::with_capacity(segments.len());
+    let mut previous_end_ms = 0;
+    for segment in segments {
+        let tts_ms = wav_duration_ms(Path::new(&segment.audio_path))?;
+        let tempo = fit_tempo(segment.start_ms, segment.end_ms, tts_ms);
+        let scheduled_start_ms = scheduled_start_ms(segment.start_ms, previous_end_ms);
+        let scheduled_end_ms = scheduled_start_ms + fitted_duration_ms(tts_ms, tempo);
+        timings.push(VoiceoverTiming {
+            tts_ms,
+            tempo,
+            scheduled_start_ms,
+            scheduled_end_ms,
+        });
+        previous_end_ms = scheduled_end_ms;
+    }
+    Ok(timings)
+}
+
+fn subtitle_timings(tts: &TtsDocument, timings: &[VoiceoverTiming]) -> Vec<SubtitleTiming> {
+    tts.segments
+        .iter()
+        .zip(timings)
+        .map(|(segment, timing)| SubtitleTiming {
+            id: segment.id.clone(),
+            start_ms: timing.scheduled_start_ms,
+            end_ms: timing.scheduled_end_ms,
+        })
+        .collect()
+}
+
+fn scheduled_start_ms(original_start_ms: u64, previous_end_ms: u64) -> u64 {
+    original_start_ms.max(previous_end_ms)
+}
+
+fn fitted_duration_ms(tts_ms: u64, tempo: f32) -> u64 {
+    (tts_ms as f64 / tempo.max(1.0) as f64).ceil() as u64
 }
 
 fn fit_tempo(start_ms: u64, end_ms: u64, tts_ms: u64) -> f32 {
@@ -669,6 +619,8 @@ fn mux_video(
     original_audio_volume: f32,
     voiceover_volume: f32,
     subtitle_path: Option<&Path>,
+    total_ms: u64,
+    on_progress: impl FnMut(u64),
 ) -> Result<(), ExportError> {
     let original_audio_volume = clamp_volume(original_audio_volume);
     let voiceover_volume = clamp_volume(voiceover_volume);
@@ -715,9 +667,15 @@ fn mux_video(
     } else {
         command.arg("-c:v").arg("copy");
     }
-    command.arg("-c:a").arg("aac").arg(video_path);
+    command
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-progress")
+        .arg("pipe:1")
+        .arg("-nostats")
+        .arg(video_path);
 
-    run_command(&mut command)
+    run_command_with_progress(&mut command, total_ms, on_progress)
 }
 
 fn should_transcode_video_for_mp4(media_url: &str) -> bool {
@@ -755,6 +713,79 @@ fn run_command(command: &mut Command) -> Result<(), ExportError> {
     Err(ExportError::CommandFailed(command_error_summary(
         &output.stderr,
     )))
+}
+
+fn run_command_with_progress(
+    command: &mut Command,
+    total_ms: u64,
+    mut on_progress: impl FnMut(u64),
+) -> Result<(), ExportError> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| ExportError::CommandFailed(format!("无法启动 ffmpeg：{error}")))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ExportError::CommandFailed("无法读取 ffmpeg 错误输出。".to_string()))?;
+    let stderr_reader = thread::spawn(move || {
+        let mut stderr = stderr;
+        let mut output = Vec::new();
+        let _ = stderr.read_to_end(&mut output);
+        output
+    });
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ExportError::CommandFailed("无法读取 ffmpeg 进度输出。".to_string()))?;
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        if let Some(processed_ms) = parse_ffmpeg_progress_ms(&line) {
+            on_progress(processed_ms.min(total_ms));
+        }
+    }
+    let status = child
+        .wait()
+        .map_err(|error| ExportError::CommandFailed(format!("等待 ffmpeg 失败：{error}")))?;
+    let stderr = stderr_reader.join().unwrap_or_default();
+    if status.success() {
+        on_progress(total_ms);
+        return Ok(());
+    }
+
+    Err(ExportError::CommandFailed(command_error_summary(&stderr)))
+}
+
+fn parse_ffmpeg_progress_ms(line: &str) -> Option<u64> {
+    line.strip_prefix("out_time_us=")
+        .or_else(|| line.strip_prefix("out_time_ms="))?
+        .parse::<u64>()
+        .ok()
+        .map(|microseconds| microseconds / 1000)
+}
+
+fn probe_media_duration_ms(media_url: &str) -> Option<u64> {
+    let output = Command::new(ffprobe_path())
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(media_url)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let seconds = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return None;
+    }
+    Some((seconds * 1000.0).ceil() as u64)
 }
 
 fn command_error_summary(stderr: &[u8]) -> String {
@@ -1067,17 +1098,42 @@ mod tests {
     }
 
     #[test]
-    fn tempo_filters_split_values_above_two() {
+    fn tempo_filters_cap_speed_for_clear_speech() {
         assert_eq!(atempo_filters(1.0), Vec::<String>::new());
         assert_eq!(atempo_filters(1.5), vec!["atempo=1.500"]);
-        assert_eq!(atempo_filters(3.0), vec!["atempo=2.000", "atempo=1.500"]);
+        assert_eq!(atempo_filters(3.0), vec!["atempo=1.500"]);
     }
 
     #[test]
     fn fit_tempo_uses_segment_duration_and_clamps() {
         assert_eq!(fit_tempo(1000, 3000, 1000), 1.0);
-        assert!((fit_tempo(1000, 3000, 3840) - 2.0).abs() < 0.01);
+        assert!((fit_tempo(1000, 3000, 2400) - 1.25).abs() < 0.01);
+        assert_eq!(fit_tempo(1000, 3000, 3840), MAX_TEMPO);
         assert_eq!(fit_tempo(1000, 1300, 10_000), MAX_TEMPO);
+    }
+
+    #[test]
+    fn voiceover_schedule_delays_overlapping_segment() {
+        assert_eq!(scheduled_start_ms(900, 1200), 1200);
+        assert_eq!(scheduled_start_ms(1500, 1200), 1500);
+        assert_eq!(fitted_duration_ms(3000, 1.5), 2000);
+    }
+
+    #[test]
+    fn ffmpeg_progress_is_parsed_as_milliseconds() {
+        assert_eq!(
+            parse_ffmpeg_progress_ms("out_time_us=15002500"),
+            Some(15_002)
+        );
+        assert_eq!(parse_ffmpeg_progress_ms("out_time_ms=2500000"), Some(2_500));
+        assert_eq!(parse_ffmpeg_progress_ms("progress=continue"), None);
+    }
+
+    #[test]
+    fn export_progress_is_clamped_to_media_duration() {
+        assert_eq!(export_progress("muxing", 500, 1000).progress, 0.5);
+        assert_eq!(export_progress("muxing", 1500, 1000).progress, 1.0);
+        assert_eq!(export_progress("started", 0, 0).progress, 0.0);
     }
 
     #[test]
@@ -1117,21 +1173,34 @@ mod tests {
 
     #[test]
     fn bilingual_subtitles_render_english_above_target_language() {
-        let subtitles = build_subtitle_srt(&subtitle_options(true, true));
+        let subtitles = build_subtitle_srt(&subtitle_options(true, true), &[]);
 
         assert!(subtitles.contains("1\n00:00:01,230 --> 00:00:04,560\nHello world\n안녕하세요\n"));
     }
 
     #[test]
     fn single_target_subtitle_omits_english_line() {
-        let subtitles = build_subtitle_srt(&subtitle_options(false, true));
+        let subtitles = build_subtitle_srt(&subtitle_options(false, true), &[]);
 
         assert!(!subtitles.contains("Hello world"));
         assert!(subtitles.contains("1\n00:00:01,230 --> 00:00:04,560\n안녕하세요\n"));
     }
 
     #[test]
-    fn long_bilingual_subtitles_are_split_into_short_two_line_cues() {
+    fn subtitles_follow_scheduled_voiceover_timing() {
+        let timings = vec![SubtitleTiming {
+            id: "seg_1".to_string(),
+            start_ms: 5_000,
+            end_ms: 8_000,
+        }];
+
+        let subtitles = build_subtitle_srt(&subtitle_options(false, true), &timings);
+
+        assert!(subtitles.contains("1\n00:00:05,000 --> 00:00:08,000\n안녕하세요\n"));
+    }
+
+    #[test]
+    fn long_bilingual_subtitles_keep_complete_sentence_in_single_cue() {
         let mut options = subtitle_options(true, true);
         options.translation.segments[0].start_ms = 0;
         options.translation.segments[0].end_ms = 12_000;
@@ -1142,23 +1211,19 @@ mod tests {
             "所有东西看起来都非常棒，而且当我将鼠标悬停在这个按钮上时，会看到一个细微的动画效果。这些细节在构建用户界面时至关重要。"
                 .to_string();
 
-        let subtitles = build_subtitle_srt(&options);
+        let subtitles = build_subtitle_srt(&options, &[]);
         let cues = subtitles.trim().split("\n\n").collect::<Vec<_>>();
 
-        assert!(cues.len() > 3);
-        for cue in cues {
-            let lines = cue.lines().skip(2).collect::<Vec<_>>();
-            assert_eq!(lines.len(), 2);
-            assert!(subtitle_visual_width(lines[0]) <= MAX_ENGLISH_SUBTITLE_WIDTH);
-            assert!(subtitle_visual_width(lines[1]) <= MAX_TARGET_SUBTITLE_WIDTH);
-        }
+        assert_eq!(cues.len(), 1);
+        assert!(subtitles.contains(&options.translation.segments[0].source_text));
+        assert!(subtitles.contains(&options.translation.segments[0].translated_text));
     }
 
     #[test]
-    fn english_subtitle_split_preserves_word_boundaries() {
+    fn subtitle_text_normalizes_spacing_without_splitting_sentence() {
         assert_eq!(
-            split_subtitle_lines("Everything looks so good when hovering", 20),
-            vec!["Everything looks so", "good when hovering"]
+            normalize_subtitle_text("Everything   looks\nso good"),
+            "Everything looks so good"
         );
     }
 

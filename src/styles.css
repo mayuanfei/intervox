@@ -47,6 +47,11 @@ body {
   color: var(--selection-text);
 }
 
+video::cue {
+  font-size: 72%;
+  line-height: 1.15;
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
