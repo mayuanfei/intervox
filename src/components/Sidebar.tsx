@@ -6,19 +6,17 @@ import {
   Settings as SettingsIcon,
   ChevronLeft,
   ChevronRight,
-  Plus,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
 
 export function Sidebar() {
-  const { activePage, setActivePage, startFullPipeline, activeMediaInput } = useIntervox();
+  const { activePage, setActivePage } = useIntervox();
   const [collapsed, setCollapsed] = useState(false);
 
   const menuItems = [
     { id: "player", label: "播放器 Player", icon: Video },
     { id: "translate", label: "翻译配置 Translate", icon: Languages },
     { id: "tasks", label: "任务状态 Tasks", icon: Activity },
-    { id: "settings", label: "参数设置 Settings", icon: SettingsIcon },
   ];
 
   return (
@@ -72,36 +70,20 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Footer "New Project" Button */}
+      {/* Footer "Settings" Button */}
       <div className="p-4 border-t th-border">
-        {collapsed ? (
-          <button
-            onClick={startFullPipeline}
-            disabled={!activeMediaInput}
-            className={`w-8 h-8 rounded-full flex items-center justify-center border border-cyan-500 text-cyan-400 hover:bg-cyan-500 hover:text-black transition-all ${
-              !activeMediaInput ? "opacity-30 cursor-not-allowed" : ""
-            }`}
-            title="开始完整翻译 Dubbing Pipeline"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-        ) : (
-          <button
-            onClick={startFullPipeline}
-            disabled={!activeMediaInput}
-            className={`w-full flex items-center justify-center gap-2 py-2 px-4 border border-cyan-500 text-cyan-400 text-xs font-mono tracking-widest hover:bg-cyan-500 hover:text-black transition-all disabled:opacity-30 disabled:cursor-not-allowed ${
-              activeMediaInput ? "border-glow font-bold animate-pulse" : ""
-            }`}
-            title={
-              activeMediaInput
-                ? "一键提交 ASR+翻译+TTS+视频合成"
-                : "请先在“播放器”或“翻译配置”页面输入视频源"
-            }
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>NEW PROJECT</span>
-          </button>
-        )}
+        <button
+          onClick={() => setActivePage("settings")}
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md font-medium font-mono text-[13px] transition-all border ${
+            activePage === "settings"
+              ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 shadow-sm text-glow"
+              : "border-transparent th-text-3 th-hover-surface"
+          } ${collapsed ? "justify-center" : ""}`}
+          title={collapsed ? "参数设置 Settings" : undefined}
+        >
+          <SettingsIcon className="w-4 h-4 flex-shrink-0" />
+          {!collapsed && <span>参数设置 Settings</span>}
+        </button>
       </div>
     </aside>
   );
