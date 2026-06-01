@@ -124,6 +124,15 @@ export function Player() {
 
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+
+    // Request window and element focus when entering fullscreen to prevent macOS beep sound
+    const focusTimer = setTimeout(() => {
+      window.focus();
+      document.body.focus();
+      videoRef.current?.focus();
+      playerContainerRef.current?.focus();
+    }, 150);
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setIsPlayerExpanded(false);
@@ -133,6 +142,7 @@ export function Player() {
     document.addEventListener("keydown", handleKeyDown);
 
     return () => {
+      clearTimeout(focusTimer);
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", handleKeyDown);
       void syncFullscreenMode(false);
@@ -454,6 +464,15 @@ export function Player() {
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
       try {
         await getCurrentWindow().setSimpleFullscreen(expanded);
+        if (expanded) {
+          setTimeout(async () => {
+            try {
+              await getCurrentWindow().setFocus();
+            } catch (e) {
+              console.error("Failed to set window focus:", e);
+            }
+          }, 150);
+        }
       } catch (err) {
         console.error("Error toggling desktop fullscreen:", err);
       }
@@ -567,11 +586,12 @@ export function Player() {
         <div className="lg:col-span-2 space-y-4">
           <div
             ref={playerContainerRef}
+            tabIndex={-1}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             onContextMenu={(e) => e.preventDefault()}
-            className={`bg-black overflow-hidden flex flex-col justify-between group shadow-lg transition-colors ${
+            className={`bg-black overflow-hidden flex flex-col justify-between group shadow-lg transition-colors focus:outline-none ${
               isPlayerExpanded
                 ? "fixed inset-0 z-[100] w-screen h-screen"
                 : "aspect-video relative border rounded-sm"
