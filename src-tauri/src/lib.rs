@@ -1,6 +1,7 @@
 mod asr;
 mod credentials;
 mod export;
+mod playback_server;
 mod storage;
 mod translation;
 mod tts;

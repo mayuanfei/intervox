@@ -19,6 +19,7 @@ import {
   ASR_PROVIDER_OPTIONS,
 } from "../lib/asrOptions";
 import { invoke } from "@tauri-apps/api/core";
+import { CustomSelect } from "../components/CustomSelect";
 
 export function Translate() {
   const {
@@ -219,22 +220,17 @@ export function Translate() {
                   <label className="th-text-3 text-[10px] uppercase font-bold">
                     ASR & LLM Engine Provider
                   </label>
-                  <select
+                  <CustomSelect
                     value={config.provider}
-                    onChange={(e) =>
+                    onChange={(provider) =>
                       setConfig((prev) => ({
                         ...prev,
-                        provider: e.target.value as any,
+                        provider,
                       }))
                     }
-                    className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                  >
-                    {ASR_PROVIDER_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={ASR_PROVIDER_OPTIONS}
+                    className="w-full rounded-lg border th-border th-bg-input px-3 py-1.5 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+                  />
                 </div>
 
                 <div className="space-y-1">
@@ -243,33 +239,23 @@ export function Translate() {
                   </label>
                   {config.provider === "volc_doubao" ? (
                     <div className="space-y-2">
-                      <select
+                      <CustomSelect
                         value={translationModel}
-                        onChange={(e) => setTranslationModel(e.target.value)}
-                        className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                      >
-                        {DOUBAO_TRANSLATION_MODEL_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={setTranslationModel}
+                        options={DOUBAO_TRANSLATION_MODEL_OPTIONS}
+                        className="w-full rounded-lg border th-border th-bg-input px-3 py-1.5 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+                      />
                       <p className="text-[10px] th-text-muted leading-relaxed">
                         使用豆包语音 API Key 调用 <code className="text-cyan-400 font-mono">volc.speech.mt</code>。无需配置火山方舟 API Key 或接入点 ID。
                       </p>
                     </div>
                   ) : (
-                    <select
+                    <CustomSelect
                       value={translationModel}
-                      onChange={(e) => setTranslationModel(e.target.value)}
-                      className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                    >
-                      {BAILIAN_TRANSLATION_MODEL_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={setTranslationModel}
+                      options={BAILIAN_TRANSLATION_MODEL_OPTIONS}
+                      className="w-full rounded-lg border th-border th-bg-input px-3 py-1.5 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+                    />
                   )}
                 </div>
 
@@ -278,25 +264,20 @@ export function Translate() {
                     <label className="th-text-3 text-[10px] uppercase font-bold">
                       ASR Recognition Model
                     </label>
-                    <select
+                    <CustomSelect
                       value={config.aliyun_bailian.model}
-                      onChange={(e) =>
+                      onChange={(model) =>
                         setConfig((prev) => ({
                           ...prev,
                           aliyun_bailian: {
                             ...prev.aliyun_bailian,
-                            model: e.target.value as any,
+                            model: model as any,
                           },
                         }))
                       }
-                      className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                    >
-                      {BAILIAN_MODEL_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={BAILIAN_MODEL_OPTIONS}
+                      className="w-full rounded-lg border th-border th-bg-input px-3 py-1.5 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+                    />
                   </div>
                 )}
 
@@ -305,22 +286,23 @@ export function Translate() {
                     <label className="th-text-3 text-[10px] uppercase font-bold">
                       Whisper Model Size
                     </label>
-                    <select
+                    <CustomSelect
                       value={config.local_whisper.model}
-                      onChange={(e) =>
+                      onChange={(model) =>
                         setConfig((prev) => ({
                           ...prev,
                           local_whisper: {
                             ...prev.local_whisper,
-                            model: e.target.value as any,
+                            model: model as any,
                           },
                         }))
                       }
-                      className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                    >
-                      <option value="small">Small (Speed)</option>
-                      <option value="medium">Medium (Accuracy)</option>
-                    </select>
+                      options={[
+                        { value: "small", label: "Small (Speed)" },
+                        { value: "medium", label: "Medium (Accuracy)" },
+                      ]}
+                      className="w-full rounded-lg border th-border th-bg-input px-3 py-1.5 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+                    />
                   </div>
                 )}
 
@@ -351,22 +333,17 @@ export function Translate() {
                   <label className="th-text-3 text-[10px] uppercase font-bold">
                     Target Language
                   </label>
-                  <select
+                  <CustomSelect
                     value={config.target_language}
-                    onChange={(e) =>
+                    onChange={(targetLanguage) =>
                       setConfig((prev) => ({
                         ...prev,
-                        target_language: e.target.value as any,
+                        target_language: targetLanguage,
                       }))
                     }
-                    className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                  >
-                    {TARGET_LANGUAGE_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={TARGET_LANGUAGE_OPTIONS}
+                    className="w-full rounded-lg border th-border th-bg-input px-3 py-1.5 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+                  />
                 </div>
               </div>
             </div>
@@ -567,17 +544,12 @@ export function Translate() {
                 <label className="block th-text-3 text-[10px] uppercase font-bold">
                   Select Preset Voice Timbre
                 </label>
-                <select
+                <CustomSelect
                   value={ttsVoice}
-                  onChange={(e) => setTtsVoice(e.target.value)}
-                  className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                >
-                  {(config.provider === "volc_doubao" ? DOUBAO_TTS_VOICE_OPTIONS : BAILIAN_TTS_VOICE_OPTIONS).map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setTtsVoice}
+                  options={config.provider === "volc_doubao" ? DOUBAO_TTS_VOICE_OPTIONS : BAILIAN_TTS_VOICE_OPTIONS}
+                  className="w-full rounded-lg border th-border th-bg-input px-3 py-1.5 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+                />
               </div>
             )}
           </div>

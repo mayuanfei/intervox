@@ -14,6 +14,7 @@ import {
   SOURCE_LANGUAGE_OPTIONS,
   TARGET_LANGUAGE_OPTIONS,
 } from "../lib/asrOptions";
+import { CustomSelect } from "../components/CustomSelect";
 
 export function Settings() {
   const {
@@ -42,15 +43,19 @@ export function Settings() {
   const [showVolcKey, setShowVolcKey] = React.useState(false);
 
   const handleBrowseOutputDir = async () => {
-    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-      try {
-        const folderPath = await invoke<string | null>("select_local_directory");
-        if (folderPath) {
-          setOutputDir(folderPath);
-        }
-      } catch (e) {
-        console.error("Failed to select output directory:", e);
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      showToast("浏览器预览无法打开系统目录选择器，请手动填写路径或使用桌面应用。", "info");
+      return;
+    }
+
+    try {
+      const folderPath = await invoke<string | null>("select_local_directory");
+      if (folderPath) {
+        setOutputDir(folderPath);
       }
+    } catch (e) {
+      console.error("Failed to select output directory:", e);
+      showToast("无法打开系统目录选择器，请手动填写输出路径。", "error");
     }
   };
 
@@ -146,44 +151,34 @@ export function Settings() {
               <label className="block th-text-3 font-semibold uppercase text-[11px]">
                 AUTO_DETECT_LANG
               </label>
-              <select
+              <CustomSelect
                 value={config.source_language}
-                onChange={(e) =>
+                onChange={(sourceLanguage) =>
                   setConfig((prev) => ({
                     ...prev,
-                    source_language: e.target.value as any,
+                    source_language: sourceLanguage,
                   }))
                 }
-                className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-              >
-                {SOURCE_LANGUAGE_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+                options={SOURCE_LANGUAGE_OPTIONS}
+                className="w-full rounded-lg border th-border th-bg-input px-3 py-2 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+              />
             </div>
 
             <div className="space-y-2">
               <label className="block th-text-3 font-semibold uppercase text-[11px]">
                 DEFAULT_TARGET_LANG
               </label>
-              <select
+              <CustomSelect
                 value={config.target_language}
-                onChange={(e) =>
+                onChange={(targetLanguage) =>
                   setConfig((prev) => ({
                     ...prev,
-                    target_language: e.target.value as any,
+                    target_language: targetLanguage,
                   }))
                 }
-                className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-              >
-                {TARGET_LANGUAGE_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+                options={TARGET_LANGUAGE_OPTIONS}
+                className="w-full rounded-lg border th-border th-bg-input px-3 py-2 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+              />
             </div>
 
             <div className="flex items-center justify-between pt-2">
@@ -321,6 +316,28 @@ export function Settings() {
                     }));
                   }}
                   placeholder="your-volcengine-app-id"
+                  className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 font-mono"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block th-text-muted text-[10px] font-bold uppercase">
+                  RESOURCE_ID (可选)
+                </label>
+                <input
+                  type="text"
+                  value={config.volc_doubao.resource_id || ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setConfig((prev) => ({
+                      ...prev,
+                      volc_doubao: {
+                        ...prev.volc_doubao,
+                        resource_id: val,
+                      }
+                    }));
+                  }}
+                  placeholder="默认: volc.bigasr.auc_turbo (极速版)"
                   className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50 font-mono"
                 />
               </div>

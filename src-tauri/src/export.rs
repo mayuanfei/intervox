@@ -12,7 +12,7 @@ const SEGMENT_FIT_PADDING_MS: u64 = 80;
 const MAX_TEMPO: f32 = 3.0;
 const MAX_ENGLISH_SUBTITLE_WIDTH: usize = 36;
 const MAX_TARGET_SUBTITLE_WIDTH: usize = 28;
-const PLAYBACK_CACHE_VERSION: &str = "v3-h264-preview-no-upscale";
+const PLAYBACK_CACHE_VERSION: &str = "v4-primary-stream-preview";
 const MAX_VOICEOVER_INPUTS_PER_COMMAND: usize = 100;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -783,13 +783,13 @@ pub fn prepare_video_for_playback(
         .to_lowercase();
 
     if matches!(ext.as_str(), "mp3" | "wav" | "m4a") {
-        return Ok(input_path);
+        return crate::playback_server::register_playback_file(path);
     }
 
     let media_info = probe_playback_media(path)?;
     let playback_mode = playback_video_mode(&ext, &media_info);
     if playback_mode == PlaybackVideoMode::Direct {
-        return Ok(input_path);
+        return crate::playback_server::register_playback_file(path);
     }
 
     let temp_dir = crate::storage::ensure_output_subdir(output_dir.as_deref(), "temp_playback")
@@ -811,18 +811,20 @@ pub fn prepare_video_for_playback(
     if output_path.exists() {
         let cached_info = probe_playback_media(&output_path)?;
         if playback_video_mode("mp4", &cached_info) == PlaybackVideoMode::Direct {
-            return Ok(output_path.to_string_lossy().to_string());
+            return crate::playback_server::register_playback_file(&output_path);
         }
         let _ = fs::remove_file(&output_path);
     }
     let _ = fs::remove_file(&partial_output_path);
 
     let preferred_encoder = playback_h264_encoder();
+    let copy_audio = media_info.audio_codec.as_deref() == Some("aac");
     let mut output = playback_conversion_command(
         &input_path,
         &partial_output_path,
         playback_mode,
         &preferred_encoder,
+        copy_audio,
     )
     .output()
     .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
@@ -837,6 +839,7 @@ pub fn prepare_video_for_playback(
             &partial_output_path,
             playback_mode,
             "libx264",
+            copy_audio,
         )
         .output()
         .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
@@ -850,13 +853,14 @@ pub fn prepare_video_for_playback(
     fs::rename(&partial_output_path, &output_path)
         .map_err(|error| format!("保存播放器预览失败：{error}"))?;
 
-    Ok(output_path.to_string_lossy().to_string())
+    crate::playback_server::register_playback_file(&output_path)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PlaybackMediaInfo {
     video_codec: Option<String>,
     audio_codec: Option<String>,
+    video_stream_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -899,7 +903,12 @@ fn probe_playback_media(path: &Path) -> Result<PlaybackMediaInfo, String> {
             .and_then(serde_json::Value::as_str)
             .map(ToString::to_string);
         match codec_type {
-            Some("video") if info.video_codec.is_none() => info.video_codec = codec_name,
+            Some("video") => {
+                info.video_stream_count += 1;
+                if info.video_codec.is_none() {
+                    info.video_codec = codec_name;
+                }
+            }
             Some("audio") if info.audio_codec.is_none() => info.audio_codec = codec_name,
             _ => {}
         }
@@ -913,6 +922,9 @@ fn playback_video_mode(ext: &str, info: &PlaybackMediaInfo) -> PlaybackVideoMode
     }
     if info.video_codec.as_deref() != Some("h264") {
         return PlaybackVideoMode::Transcode;
+    }
+    if info.video_stream_count > 1 {
+        return PlaybackVideoMode::Remux;
     }
 
     let compatible_container = matches!(ext, "mp4" | "mov" | "m4v");
@@ -961,6 +973,7 @@ fn playback_conversion_command(
     output_path: &Path,
     playback_mode: PlaybackVideoMode,
     encoder: &str,
+    copy_audio: bool,
 ) -> Command {
     let mut command = ffmpeg_command();
     command
@@ -972,7 +985,7 @@ fn playback_conversion_command(
         .arg("-map")
         .arg("0:a:0?")
         .arg("-c:a")
-        .arg("aac");
+        .arg(if copy_audio { "copy" } else { "aac" });
 
     if playback_mode == PlaybackVideoMode::Transcode {
         append_h264_video_args(&mut command, encoder);
@@ -1162,6 +1175,7 @@ mod tests {
         let info = PlaybackMediaInfo {
             video_codec: Some("av1".to_string()),
             audio_codec: Some("opus".to_string()),
+            video_stream_count: 1,
         };
 
         assert_eq!(
@@ -1175,6 +1189,7 @@ mod tests {
         let info = PlaybackMediaInfo {
             video_codec: Some("h264".to_string()),
             audio_codec: Some("opus".to_string()),
+            video_stream_count: 1,
         };
 
         assert_eq!(playback_video_mode("mkv", &info), PlaybackVideoMode::Remux);
@@ -1185,8 +1200,20 @@ mod tests {
         let info = PlaybackMediaInfo {
             video_codec: Some("h264".to_string()),
             audio_codec: Some("aac".to_string()),
+            video_stream_count: 1,
         };
 
         assert_eq!(playback_video_mode("mp4", &info), PlaybackVideoMode::Direct);
+    }
+
+    #[test]
+    fn h264_aac_mp4_with_cover_stream_is_remuxed_for_webview_playback() {
+        let info = PlaybackMediaInfo {
+            video_codec: Some("h264".to_string()),
+            audio_codec: Some("aac".to_string()),
+            video_stream_count: 2,
+        };
+
+        assert_eq!(playback_video_mode("mp4", &info), PlaybackVideoMode::Remux);
     }
 }

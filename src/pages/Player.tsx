@@ -14,7 +14,10 @@ import {
   Plus,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+
+const isAbsoluteFilesystemPath = (value: string) =>
+  value.startsWith("/") || value.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(value);
 
 export function Player() {
   const {
@@ -35,6 +38,7 @@ export function Player() {
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const browserLocalPreviewRef = useRef<{ input: string; url: string } | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -48,9 +52,18 @@ export function Player() {
   const [isPreparingPlayback, setIsPreparingPlayback] = useState(false);
   const [videoResolution, setVideoResolution] = useState("");
 
+  useEffect(() => {
+    return () => {
+      if (browserLocalPreviewRef.current) {
+        URL.revokeObjectURL(browserLocalPreviewRef.current.url);
+      }
+    };
+  }, []);
+
   // Resolve media source path safely
   useEffect(() => {
     let isCurrent = true;
+    const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
     if (!activeMediaInput) {
       setMediaSrc("");
@@ -62,6 +75,12 @@ export function Player() {
 
     setVideoResolution("");
     if (mediaInputMode === "public_url") {
+      if (!isTauri && isAbsoluteFilesystemPath(activeMediaInput)) {
+        setMediaSrc("");
+        setPlayerError("浏览器预览无法直接读取本机绝对路径。请点击 OPEN FILE 重新选择文件，或使用桌面应用。");
+        setIsPreparingPlayback(false);
+        return;
+      }
       setMediaSrc(activeMediaInput);
       setPlayerError(null);
       setIsPreparingPlayback(false);
@@ -69,20 +88,20 @@ export function Player() {
     }
 
     const resolveLocalPath = async () => {
-      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      if (isTauri) {
         try {
-          if (activeMediaInput.startsWith("/") || activeMediaInput.includes(":/") || activeMediaInput.includes(":\\")) {
+          if (isAbsoluteFilesystemPath(activeMediaInput)) {
             setIsPreparingPlayback(true);
-            const playablePath = await invoke<string>("prepare_video_for_playback", {
+            const playableUrl = await invoke<string>("prepare_video_for_playback", {
               inputPath: activeMediaInput,
               outputDir: outputDir.trim() || null,
             });
             if (!isCurrent) return;
-            const converted = convertFileSrc(playablePath);
-            setMediaSrc(converted);
+            setMediaSrc(playableUrl);
             setPlayerError(null);
           } else {
             setMediaSrc("");
+            setPlayerError("请选择有效的本地视频文件。");
           }
         } catch (e: any) {
           console.error("Failed to prepare file for playback:", e);
@@ -96,7 +115,14 @@ export function Player() {
           }
         }
       } else {
-        setMediaSrc("");
+        const preview = browserLocalPreviewRef.current;
+        if (preview?.input === activeMediaInput) {
+          setMediaSrc(preview.url);
+          setPlayerError(null);
+        } else {
+          setMediaSrc("");
+          setPlayerError("浏览器预览无法直接读取本机绝对路径。请点击 OPEN FILE 重新选择文件，或使用桌面应用。");
+        }
         setIsPreparingPlayback(false);
       }
     };
@@ -105,6 +131,10 @@ export function Player() {
 
     return () => {
       isCurrent = false;
+      if (videoRef.current) {
+        videoRef.current.pause();
+      }
+      setMediaSrc("");
     };
   }, [activeMediaInput, mediaInputMode, outputDir]);
 
@@ -216,9 +246,14 @@ export function Player() {
       setMediaInputMode("local_file");
     } else {
       // Fallback for standard browser context (play via object stream URL)
+      if (browserLocalPreviewRef.current) {
+        URL.revokeObjectURL(browserLocalPreviewRef.current.url);
+      }
+      const url = URL.createObjectURL(file);
+      browserLocalPreviewRef.current = { input: file.name, url };
       setLocalMediaPath(file.name);
       setMediaInputMode("local_file");
-      setMediaSrc(URL.createObjectURL(file));
+      setMediaSrc(url);
       setPlayerError(null);
     }
     

@@ -311,7 +311,7 @@ pub enum AsrError {
     UnsupportedBailianModel,
     #[error("阿里云百炼请求失败：{0}")]
     Http(#[from] reqwest::Error),
-    #[error("阿里云百炼返回异常：{0}")]
+    #[error("{0}")]
     Api(String),
     #[error("阿里云百炼任务失败：{0}")]
     TaskFailed(String),
@@ -589,7 +589,7 @@ fn submit_bailian_qwen_task(
 
     extract_string(&response, &["output", "task_id"])
         .map(ToString::to_string)
-        .ok_or_else(|| AsrError::Api(format!("提交任务未返回 task_id：{response}")))
+        .ok_or_else(|| AsrError::Api(format!("阿里云百炼提交任务异常：未返回 task_id：{response}")))
 }
 
 fn poll_bailian_task(
@@ -618,7 +618,7 @@ fn poll_bailian_task(
         match extract_string(&response, &["output", "task_status"]) {
             Some("SUCCEEDED") => {
                 return extract_bailian_transcription_url(&response).ok_or_else(|| {
-                    AsrError::Api(format!("任务成功但未返回 transcription_url：{response}"))
+                    AsrError::Api(format!("阿里云百炼查询任务异常：任务成功但未返回 transcription_url：{response}"))
                 });
             }
             Some("FAILED") => {
@@ -630,12 +630,12 @@ fn poll_bailian_task(
             Some("PENDING") | Some("RUNNING") => thread::sleep(Duration::from_secs(2)),
             Some(other) => {
                 return Err(AsrError::Api(format!(
-                    "未知任务状态 {other}，原始响应：{response}"
+                    "阿里云百炼查询任务异常：未知任务状态 {other}，原始响应：{response}"
                 )));
             }
             None => {
                 return Err(AsrError::Api(format!(
-                    "查询任务未返回 task_status：{response}"
+                    "阿里云百炼查询任务异常：查询任务未返回 task_status：{response}"
                 )));
             }
         }

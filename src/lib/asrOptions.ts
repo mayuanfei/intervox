@@ -143,7 +143,9 @@ export const BAILIAN_TTS_VOICE_OPTIONS = [
 
 // Volcengine Doubao Translation Model Options
 export const DOUBAO_TRANSLATION_MODEL_OPTIONS = [
-  { value: "volc-speech-mt", label: "火山机器翻译 (Volc Speech MT - 推荐)" },
+  { value: "volc-speech-mt", label: "火山机器翻译 (Volc Speech MT - 速度极快)" },
+  { value: "qwen-plus", label: "通义千问-Plus (LLM 大模型上下文翻译 - 质量更好)" },
+  { value: "qwen-max", label: "通义千问-Max (LLM 大模型复杂语境精翻)" },
 ];
 
 // Volcengine Doubao TTS Model Options
