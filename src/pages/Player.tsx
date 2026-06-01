@@ -72,6 +72,53 @@ export function Player() {
     };
   }, []);
 
+  // Listen to Tauri native drag-drop events
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+
+    let isMounted = true;
+    let unlisten: (() => void) | null = null;
+
+    const setupDragDrop = async () => {
+      try {
+        const unsubscribe = await getCurrentWindow().onDragDropEvent((event) => {
+          if (!isMounted) return;
+          const type = event.payload.type;
+          if (type === "enter" || type === "over") {
+            setIsDragActive(true);
+          } else if (type === "drop") {
+            setIsDragActive(false);
+            const paths = (event.payload as any).paths;
+            if (paths && paths.length > 0) {
+              const path = paths[0];
+              setLocalMediaPath(path);
+              setMediaInputMode("local_file");
+              setIsPlaying(true);
+            }
+          } else if (type === "leave") {
+            setIsDragActive(false);
+          }
+        });
+        if (isMounted) {
+          unlisten = unsubscribe;
+        } else {
+          unsubscribe();
+        }
+      } catch (err) {
+        console.error("Failed to setup Tauri drag-drop event listener:", err);
+      }
+    };
+
+    void setupDragDrop();
+
+    return () => {
+      isMounted = false;
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (!isPlayerExpanded) return;
 
