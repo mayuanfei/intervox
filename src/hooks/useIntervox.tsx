@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from "react";
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invokeOrFallback } from "../lib/tauri";
 import { DEFAULT_ASR_CONFIG } from "../lib/asrOptions";
@@ -154,6 +154,7 @@ interface IntervoxContextType {
   clearCompletedTasks: () => void;
   addNewTask: (input: string, mode: MediaInputMode) => void;
   deleteTask: (taskId: string) => void;
+  cancelTask: (taskId: string) => void;
 }
 
 const IntervoxContext = createContext<IntervoxContextType | undefined>(undefined);
@@ -372,6 +373,11 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   });
 
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+
+  const tasksRef = useRef(tasks);
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
 
   useEffect(() => {
     localStorage.setItem("intervox_tasks", JSON.stringify(tasks));
@@ -636,6 +642,25 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
   const deleteTask = (taskId: string) => {
     setTasks((current) => current.filter((t) => t.id !== taskId));
+    if (activeTaskId === taskId) {
+      setActiveTaskId(null);
+    }
+  };
+
+  const cancelTask = (taskId: string) => {
+    setTasks((current) =>
+      current.map((t) => {
+        if (t.id === taskId && t.status === "running") {
+          return {
+            ...t,
+            status: "failed" as const,
+            error: "任务被用户手动取消。",
+            logLines: [...t.logLines, `[${new Date().toLocaleTimeString()}] 任务已被用户手动取消。`],
+          };
+        }
+        return t;
+      })
+    );
     if (activeTaskId === taskId) {
       setActiveTaskId(null);
     }
@@ -981,6 +1006,12 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     inputMode: MediaInputMode,
     taskId: string,
   ) => {
+    const isTaskStillRunning = () => {
+      const currentTasks = tasksRef.current;
+      const task = currentTasks.find((t) => t.id === taskId);
+      return task && task.status === "running";
+    };
+
     const configToUse = config;
 
     // Compute cache keys for ASR and Translation
@@ -1020,19 +1051,23 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     const ttsCacheKey = hashString(ttsSignature);
 
     try {
+      if (!isTaskStillRunning()) return;
       // Step 1: Extract Audio
       updateActiveTaskStage("extract_audio", 0.5, "提取主音轨成功，文件准备上传百炼。");
       await new Promise((r) => setTimeout(r, 800));
 
+      if (!isTaskStillRunning()) return;
       // Step 2: ASR
       let asrResult: TranscriptDocument;
       const cachedAsr = readLocalJson<any>(`${ASR_CACHE_PREFIX}${asrCacheKey}`);
 
       if (cachedAsr && cachedAsr.document && !isPlaceholderTranscript(cachedAsr.document)) {
         asrResult = cachedAsr.document;
+        if (!isTaskStillRunning()) return;
         updateActiveTaskStage("asr", 1.0, "检测到本地 ASR 识别缓存，已直接载入（跳过 API 调用）。");
         await new Promise((r) => setTimeout(r, 600));
       } else {
+        if (!isTaskStillRunning()) return;
         updateActiveTaskStage(
           "asr",
           0.1,
@@ -1072,6 +1107,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             ]
           }
         );
+        if (!isTaskStillRunning()) return;
         // Write ASR Cache
         writeLocalJson(`${ASR_CACHE_PREFIX}${asrCacheKey}`, {
           version: 1,
@@ -1083,6 +1119,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         });
       }
 
+      if (!isTaskStillRunning()) return;
       setTranscript(asrResult);
       updateActiveTaskStage(
         "translate",
@@ -1100,14 +1137,17 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       }
 
       // Step 3: Translate
+      if (!isTaskStillRunning()) return;
       let translateResult: TranslationDocument;
       const cachedTrans = readLocalJson<any>(`${TRANSLATION_CACHE_PREFIX}${translationCacheKey}`);
 
       if (cachedTrans && cachedTrans.document) {
         translateResult = cachedTrans.document;
+        if (!isTaskStillRunning()) return;
         updateActiveTaskStage("translate", 1.0, "检测到本地翻译缓存，已直接载入（跳过 API 调用）。");
         await new Promise((r) => setTimeout(r, 600));
       } else {
+        if (!isTaskStillRunning()) return;
         translateResult = await invokeOrFallback<TranslationDocument>(
           "translate_transcript",
           {
@@ -1133,6 +1173,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             }))
           }
         );
+        if (!isTaskStillRunning()) return;
         // Write Translation Cache
         writeLocalJson(`${TRANSLATION_CACHE_PREFIX}${translationCacheKey}`, {
           version: 2,
@@ -1144,6 +1185,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         });
       }
 
+      if (!isTaskStillRunning()) return;
       setTranslation(translateResult);
       updateActiveTaskStage(
         "tts_clone",
@@ -1155,17 +1197,21 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       await new Promise((r) => setTimeout(r, 800));
 
       // Step 4: TTS / Voice Cloning
+      if (!isTaskStillRunning()) return;
       let ttsResult: TtsDocument;
       const cachedTts = readLocalJson<any>(`${TTS_CACHE_PREFIX}${ttsCacheKey}`);
       const hasValidTtsCache = cachedTts?.document
         ? await invokeOrFallback<boolean>("validate_tts_cache", { tts: cachedTts.document }, false)
         : false;
 
+      if (!isTaskStillRunning()) return;
       if (hasValidTtsCache) {
         ttsResult = cachedTts.document;
+        if (!isTaskStillRunning()) return;
         updateActiveTaskStage("tts_clone", 1.0, "检测到本地配音缓存，已直接载入（跳过重复 TTS 合成）。");
         await new Promise((r) => setTimeout(r, 600));
       } else {
+        if (!isTaskStillRunning()) return;
         ttsResult = await invokeOrFallback<TtsDocument>(
           "synthesize_tts",
           {
@@ -1178,7 +1224,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
               rate: ttsRate,
               pitch: 1,
               sample_rate: 24000,
-              original_video_path: synthesisMode === "clone" ? mediaInput : null,
+              original_video_path: mediaInput,
               app_id: configToUse.volc_doubao.app_id || null,
             }
           },
@@ -1198,6 +1244,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
             }))
           }
         );
+        if (!isTaskStillRunning()) return;
         writeLocalJson(`${TTS_CACHE_PREFIX}${ttsCacheKey}`, {
           version: 2,
           cache_key: ttsCacheKey,
@@ -1207,11 +1254,13 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         });
       }
 
+      if (!isTaskStillRunning()) return;
       setTts(ttsResult);
       updateActiveTaskStage("mix_media", 0.5, "声轨合成结束。FFmpeg 正在生成输出视频；较长视频转码需要几分钟，请保持应用运行。");
       await new Promise((r) => setTimeout(r, 800));
 
       // Step 5: Export Video
+      if (!isTaskStillRunning()) return;
       const exportRes = await invokeOrFallback<ExportResult>(
         "export_dubbed_video",
         {
@@ -1408,6 +1457,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         addNewTask,
         retryTask,
         deleteTask,
+        cancelTask,
       }}
     >
       {children}

@@ -242,6 +242,41 @@ export function Player() {
       ? duration
       : (playbackPreviewProgress?.total_ms || 0) / 1000;
 
+  // Handle left/right arrow keys for seek (forward/backward 10s)
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === "INPUT" ||
+          activeEl.tagName === "TEXTAREA" ||
+          (activeEl instanceof HTMLElement && activeEl.isContentEditable))
+      ) {
+        return;
+      }
+
+      if (!videoRef.current || !mediaSrc) return;
+
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        const newTime = Math.max(0, videoRef.current.currentTime - 10);
+        videoRef.current.currentTime = newTime;
+        setCurrentTime(newTime);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        const maxDuration = videoRef.current.duration || effectiveDuration || 0;
+        const newTime = Math.min(maxDuration, videoRef.current.currentTime + 10);
+        videoRef.current.currentTime = newTime;
+        setCurrentTime(newTime);
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mediaSrc, effectiveDuration]);
+
   const cyclePlaybackRate = () => {
     setPlaybackRate((current) => {
       if (current === 1.0) return 1.5;
@@ -546,7 +581,9 @@ export function Player() {
                 onEnded={handleVideoEnded}
                 onError={handleVideoError}
                 onContextMenu={(e) => e.preventDefault()}
-                className="w-full h-full object-contain z-10"
+                onClick={() => setIsPlaying(!isPlaying)}
+                onDoubleClick={toggleFullscreen}
+                className="w-full h-full object-contain z-10 cursor-pointer"
               />
             ) : (
               /* Placeholders if no video is loaded */

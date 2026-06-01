@@ -14,12 +14,13 @@ import {
   Music,
   Tv,
   Trash2,
+  X,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useIntervox } from "../hooks/useIntervox";
 
 export function Tasks() {
-  const { tasks, activeTaskId, clearCompletedTasks, retryTask, deleteTask } = useIntervox();
+  const { tasks, activeTaskId, clearCompletedTasks, retryTask, deleteTask, cancelTask } = useIntervox();
 
   // Find active task
   const activeTask = tasks.find((t) => t.status === "running") || tasks.find((t) => t.status === "queued" && activeTaskId === t.id);
@@ -120,6 +121,16 @@ export function Tasks() {
                     DEL
                   </button>
                 </>
+              )}
+              {activeTask.status === "running" && (
+                <button
+                  onClick={() => cancelTask(activeTask.id)}
+                  className="flex items-center gap-1 px-2 py-0.5 border border-red-500 text-red-400 hover:bg-red-500 hover:text-black rounded transition-all text-[11px] font-bold"
+                  title="取消正在执行的任务"
+                >
+                  <X className="w-2.5 h-2.5" />
+                  CANCEL
+                </button>
               )}
               <div className="text-[11px] th-text-muted">
                 STATE: <span className="text-cyan-400 font-bold">
