@@ -1,6 +1,5 @@
 import React, { useRef, useState, useEffect } from "react";
 import {
-  Download,
   History,
   Languages,
   Play,
@@ -10,8 +9,8 @@ import {
   Maximize2,
   Minimize2,
   FolderOpen,
-  ShieldCheck,
   FileVideo,
+  Trash2,
   Plus,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
@@ -40,15 +39,14 @@ export function Player() {
     setMediaInputMode,
     setLocalMediaPath,
     outputDir,
-    transcript,
-    translation,
-    startFullPipeline,
-    showToast,
+    playbackHistory,
+    addPlaybackHistoryItem,
+    deletePlaybackHistoryItem,
+    clearPlaybackHistory,
   } = useIntervox();
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
-  const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const browserLocalPreviewRef = useRef<{ input: string; url: string } | null>(null);
 
@@ -403,20 +401,7 @@ export function Player() {
     }
   };
 
-  // Metadata properties
-  const mediaExtension = activeMediaInput.split(".").pop()?.toUpperCase() || "VIDEO";
-  const isAudioFile = /\.(mp3|wav|m4a|flac)$/i.test(activeMediaInput);
-  const metadata = {
-    format: isAudioFile ? `${mediaExtension} / AUDIO` : `${mediaExtension} / AUTO`,
-    resolution: isAudioFile ? "N/A (Audio)" : videoResolution || "N/A",
-    audioTracks: "AUTO",
-    size: activeMediaInput ? "LOADED" : "0.0 GB",
-  };
 
-  const handleDownload = () => {
-    if (!mediaUrl) return;
-    showToast(`Downie 下载队列已加入：${mediaUrl}`, "info");
-  };
 
   async function syncFullscreenMode(expanded: boolean) {
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
@@ -445,51 +430,39 @@ export function Player() {
     void syncFullscreenMode(expanded);
   };
 
-  // Compile transcription segments with translated text matching segment ID
-  const displaySegments = transcript?.segments.map((seg) => {
-    const transSeg = translation?.segments.find((t) => t.id === seg.id);
-    return {
-      id: seg.id,
-      start_ms: seg.start_ms,
-      end_ms: seg.end_ms,
-      source_text: seg.text,
-      translated_text: transSeg ? transSeg.translated_text : "",
-    };
-  }) || [
-    {
-      id: "seg_1",
-      start_ms: 0,
-      end_ms: 5000,
-      source_text: "Initiating sequence alpha.",
-      translated_text: "正在启动 alpha 序列 / アルファシーケンスを開始します。",
-    },
-    {
-      id: "seg_2",
-      start_ms: 5000,
-      end_ms: 15000,
-      source_text: "Systems nominal. Awaiting command.",
-      translated_text: "系统正常。等待命令 / 系统正常。コマンドを待机中。",
-    },
-  ];
+  // Handle playing remote URLs
+  const handlePlayUrl = () => {
+    if (!mediaUrl.trim()) return;
+    setLocalMediaPath("");
+    setMediaInputMode("public_url");
+    setIsPlaying(true);
+  };
 
-  // Auto detect current segment ID based on video playback currentTime
-  const currentMs = currentTime * 1000;
-  const activeSegment = displaySegments.find(
-    (seg) => currentMs >= seg.start_ms && currentMs <= seg.end_ms
-  );
-  const activeSegmentId = activeSegment ? activeSegment.id : "";
-
-  // Auto-scroll transcript container to active segment
+  // Record playback history when media loaded
   useEffect(() => {
-    if (!activeSegmentId || !transcriptContainerRef.current) return;
-    const activeEl = document.getElementById(`seg-item-${activeSegmentId}`);
-    if (activeEl) {
-      activeEl.scrollIntoView({
-        behavior: "smooth",
-        block: "nearest",
-      });
+    if (mediaSrc && activeMediaInput) {
+      const name = mediaInputMode === "local_file"
+        ? activeMediaInput.substring(activeMediaInput.lastIndexOf("/") + 1) || activeMediaInput
+        : activeMediaInput;
+      addPlaybackHistoryItem(name, activeMediaInput, mediaInputMode);
     }
-  }, [activeSegmentId]);
+  }, [mediaSrc, activeMediaInput, mediaInputMode]);
+
+  // Format historical timestamp
+  const formatHistoryTime = (isoString: string) => {
+    try {
+      const date = new Date(isoString);
+      return date.toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    } catch {
+      return "未知时间";
+    }
+  };
 
   return (
     <div className="space-y-4 font-mono text-[13px] animate-fade-in">
@@ -502,32 +475,32 @@ export function Player() {
         className="hidden"
       />
 
-      {/* Top Search & Download Control Bar */}
+      {/* Top Playback Control Bar */}
       <div className="flex flex-wrap items-center gap-3 bg-[#0a101f] border th-border p-3 rounded-sm">
         <div className="flex-1 min-w-[280px] flex items-center gap-2 border th-border bg-black/40 px-3 py-1.5 relative">
           <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
           <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider select-none shrink-0 border-r th-border pr-2 mr-1">
-            PARSING_READY
+            STREAM_PLAY
           </span>
           <input
             type="text"
             value={mediaUrl}
             onChange={(e) => setMediaUrl(e.target.value)}
-            placeholder="Paste video URL (YouTube, Twitter, Bilibili...)"
+            placeholder="Paste video stream URL (mp4, webm, mp3...)"
             className="flex-1 bg-transparent border-none text-glow text-cyan-400 placeholder-slate-700 focus:outline-none text-[12px] pr-2"
           />
         </div>
 
         <button
-          onClick={handleDownload}
-          disabled={!mediaUrl}
+          onClick={handlePlayUrl}
+          disabled={!mediaUrl.trim()}
           className={`flex items-center gap-1.5 px-4 py-2 text-black font-extrabold tracking-widest text-[11px] uppercase transition-all ${
-            mediaUrl
+            mediaUrl.trim()
               ? "bg-cyan-400 hover:bg-cyan-300 shadow-md shadow-cyan-500/20"
               : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
           }`}
         >
-          <Download className="w-3.5 h-3.5" /> DOWNLOAD
+          <Play className="w-3.5 h-3.5 fill-current" /> PLAY
         </button>
 
         {/* Open File Button */}
@@ -538,18 +511,6 @@ export function Player() {
         >
           <FolderOpen className="w-4 h-4" />
           <span className="hidden sm:inline">OPEN FILE</span>
-        </button>
-
-        <button className="p-2 border th-border hover:bg-cyan-500/10 text-cyan-400 transition-all rounded-sm">
-          <History className="w-4 h-4" />
-        </button>
-
-        <button
-          onClick={startFullPipeline}
-          disabled={!activeMediaInput}
-          className="flex items-center gap-1.5 px-4 py-2 border border-cyan-500/40 text-cyan-400 font-extrabold tracking-widest text-[11px] hover:bg-cyan-500 hover:text-black transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          <Languages className="w-3.5 h-3.5" /> NEW TRANSLATION
         </button>
       </div>
 
@@ -576,6 +537,7 @@ export function Player() {
               <video
                 ref={videoRef}
                 src={mediaSrc}
+                autoPlay
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
                 onEnded={handleVideoEnded}
@@ -767,101 +729,97 @@ export function Player() {
           </div>
         </div>
 
-        {/* Right Info panels */}
-        <div className="space-y-4">
-          {/* Analysis Active status panel */}
-          <div className="border th-border th-bg-card p-4 rounded-sm flex items-center justify-between border-l-2 border-l-cyan-400">
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse"></span>
-              <span className="font-extrabold th-text tracking-wide text-xs uppercase text-glow text-cyan-400">
-                ANALYSIS_ACTIVE
-              </span>
-            </div>
-            <span className="text-[10px] text-cyan-400/80 font-bold uppercase tracking-wider">
-              NODE_09 _
+        {/* Playback History Card */}
+        <div className="border th-border th-bg-card p-4 rounded-sm flex flex-col h-[400px] lg:h-[500px]">
+          <div className="border-b th-border pb-2 flex justify-between items-center mb-3">
+            <span className="font-extrabold th-text tracking-wide text-xs uppercase text-glow text-cyan-400">
+              PLAYBACK HISTORY // 播放历史记录
             </span>
+            {playbackHistory.length > 0 && (
+              <button
+                onClick={clearPlaybackHistory}
+                className="text-[10px] text-red-400 hover:text-red-300 font-bold uppercase tracking-wider transition-colors"
+              >
+                Clear All
+              </button>
+            )}
           </div>
 
-          {/* Source Metadata Card */}
-          <div className="border th-border th-bg-card p-4 space-y-3 rounded-sm">
-            <div className="border-b th-border pb-1.5 flex justify-between items-center text-[10px] font-bold text-slate-500">
-              <span className="uppercase">SOURCE_METADATA</span>
-              <ShieldCheck className="w-3.5 h-3.5 text-cyan-400/60" />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="space-y-0.5">
-                <span className="th-text-muted text-[10px] uppercase font-bold">
-                  FORMAT
-                </span>
-                <span className="th-text font-bold block">{metadata.format}</span>
-              </div>
-              <div className="space-y-0.5">
-                <span className="th-text-muted text-[10px] uppercase font-bold">
-                  RESOLUTION
-                </span>
-                <span className="th-text font-bold block">{metadata.resolution}</span>
-              </div>
-              <div className="space-y-0.5">
-                <span className="th-text-muted text-[10px] uppercase font-bold">
-                  AUDIO_TRACKS
-                </span>
-                <span className="th-text font-bold block">{metadata.audioTracks}</span>
-              </div>
-              <div className="space-y-0.5">
-                <span className="th-text-muted text-[10px] uppercase font-bold">
-                  SIZE
-                </span>
-                <span className="th-text font-bold block">{metadata.size}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Live Transcript / Subtitle Sync Card */}
-          <div className="border th-border th-bg-card p-4 space-y-3 rounded-sm flex flex-col justify-between h-[230px]">
-            <div className="border-b th-border pb-1.5 flex justify-between items-center text-[10px] font-bold text-slate-500">
-              <span className="uppercase">LIVE_TRANSCRIPT</span>
-              <div className="flex gap-1">
-                <span className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-1 py-0.2 rounded text-[8px]">
-                  EN
-                </span>
-                <span className="text-[8px] self-center">→</span>
-                <span className="bg-purple-500/10 text-purple-400 border border-purple-500/20 px-1 py-0.2 rounded text-[8px]">
-                  ZH
-                </span>
-              </div>
-            </div>
-
-            {/* Scrollable list of syncing subtitles */}
-            <div
-              ref={transcriptContainerRef}
-              className="flex-1 space-y-3 overflow-y-auto pr-1 scrollbar-thin"
-            >
-              {displaySegments.map((seg) => {
-                const isActive = seg.id === activeSegmentId;
+          {/* History List */}
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+            {playbackHistory.length > 0 ? (
+              playbackHistory.map((item) => {
+                const isLocal = item.inputMode === "local_file";
+                const isCurrentlyPlaying = activeMediaInput === item.url;
+                
                 return (
                   <div
-                    key={seg.id}
-                    id={`seg-item-${seg.id}`}
-                    className={`p-2 transition-all rounded-sm border ${
-                      isActive
-                        ? "border-cyan-500/40 bg-cyan-500/5 border-glow text-cyan-100"
-                        : "border-transparent th-text-muted"
+                    key={item.id}
+                    className={`group border p-2 flex items-center justify-between rounded-sm transition-all hover:bg-cyan-500/5 ${
+                      isCurrentlyPlaying
+                        ? "border-cyan-500/40 bg-cyan-500/5 border-glow"
+                        : "border-transparent bg-black/20 hover:border-slate-800"
                     }`}
                   >
-                    <div className="flex items-center gap-1.5 text-[9px] font-bold text-cyan-400/80 mb-0.5">
-                      <span>{formatTime(Math.floor(seg.start_ms / 1000))}</span>
+                    <div
+                      onClick={() => {
+                        if (isLocal) {
+                          setLocalMediaPath(item.url);
+                          setMediaInputMode("local_file");
+                          setMediaUrl("");
+                        } else {
+                          setMediaUrl(item.url);
+                          setLocalMediaPath("");
+                          setMediaInputMode("public_url");
+                        }
+                        setIsPlaying(true);
+                      }}
+                      className="flex items-start gap-2.5 min-w-0 flex-1 cursor-pointer"
+                    >
+                      {isLocal ? (
+                        <FileVideo className={`w-4 h-4 mt-0.5 shrink-0 ${isCurrentlyPlaying ? "text-cyan-400" : "text-slate-500"}`} />
+                      ) : (
+                        <Languages className={`w-4 h-4 mt-0.5 shrink-0 ${isCurrentlyPlaying ? "text-cyan-400" : "text-slate-500"}`} />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <span
+                          className={`font-semibold text-xs block truncate ${
+                            isCurrentlyPlaying ? "text-cyan-400 text-glow" : "th-text"
+                          }`}
+                          title={item.name}
+                        >
+                          {item.name}
+                        </span>
+                        <span className="text-[9px] th-text-muted block mt-0.5 font-medium">
+                          {formatHistoryTime(item.timestamp)}
+                        </span>
+                      </div>
                     </div>
-                    <p className="font-semibold text-xs leading-normal">{seg.source_text}</p>
-                    {seg.translated_text && (
-                      <p className="text-[11px] text-purple-400 font-medium leading-relaxed mt-1">
-                        {seg.translated_text}
-                      </p>
-                    )}
+
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deletePlaybackHistoryItem(item.id);
+                      }}
+                      className="p-1 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ml-2 shrink-0"
+                      title="删除该记录"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 );
-              })}
-            </div>
+              })
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-center text-slate-600 space-y-2 py-8">
+                <FolderOpen className="w-8 h-8 opacity-40 text-slate-500" />
+                <span className="text-[11px] font-bold uppercase tracking-wider block">
+                  暂无播放记录
+                </span>
+                <span className="text-[9px] text-slate-700">
+                  打开本地文件或粘贴 URL 播放视频后，历史记录将自动显示在此处。
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </div>

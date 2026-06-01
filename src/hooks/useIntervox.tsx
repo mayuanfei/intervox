@@ -14,6 +14,14 @@ import type {
   TtsDocument,
 } from "../types/asr";
 
+export interface PlaybackHistoryItem {
+  id: string;
+  name: string;
+  url: string;
+  inputMode: "local_file" | "public_url";
+  timestamp: string;
+}
+
 export interface IntervoxTask {
   id: string;
   fileName: string;
@@ -155,6 +163,12 @@ interface IntervoxContextType {
   addNewTask: (input: string, mode: MediaInputMode) => void;
   deleteTask: (taskId: string) => void;
   cancelTask: (taskId: string) => void;
+
+  // Playback History
+  playbackHistory: PlaybackHistoryItem[];
+  addPlaybackHistoryItem: (name: string, url: string, mode: "local_file" | "public_url") => void;
+  deletePlaybackHistoryItem: (id: string) => void;
+  clearPlaybackHistory: () => void;
 }
 
 const IntervoxContext = createContext<IntervoxContextType | undefined>(undefined);
@@ -378,6 +392,41 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
+
+  const [playbackHistory, setPlaybackHistory] = useState<PlaybackHistoryItem[]>(() => {
+    try {
+      const saved = localStorage.getItem("intervox_playback_history");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem("intervox_playback_history", JSON.stringify(playbackHistory));
+  }, [playbackHistory]);
+
+  const addPlaybackHistoryItem = (name: string, url: string, mode: "local_file" | "public_url") => {
+    if (!url.trim()) return;
+    setPlaybackHistory((current) => {
+      const filtered = current.filter((item) => item.url !== url);
+      const newItem: PlaybackHistoryItem = {
+        id: `HIST-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        name: name || url.substring(url.lastIndexOf("/") + 1) || "video.mp4",
+        url,
+        inputMode: mode,
+        timestamp: new Date().toISOString(),
+      };
+      return [newItem, ...filtered];
+    });
+  };
+
+  const deletePlaybackHistoryItem = (id: string) => {
+    setPlaybackHistory((current) => current.filter((item) => item.id !== id));
+  };
+
+  const clearPlaybackHistory = () => {
+    setPlaybackHistory([]);
+  };
 
   useEffect(() => {
     localStorage.setItem("intervox_tasks", JSON.stringify(tasks));
@@ -1458,6 +1507,10 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         retryTask,
         deleteTask,
         cancelTask,
+        playbackHistory,
+        addPlaybackHistoryItem,
+        deletePlaybackHistoryItem,
+        clearPlaybackHistory,
       }}
     >
       {children}
