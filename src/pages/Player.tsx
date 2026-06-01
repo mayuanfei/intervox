@@ -64,6 +64,21 @@ export function Player() {
   const [isPlayerExpanded, setIsPlayerExpanded] = useState(false);
   const [videoResolution, setVideoResolution] = useState("");
 
+  const [showHistoryPanel, setShowHistoryPanel] = useState(() => {
+    try {
+      const saved = localStorage.getItem("intervox_show_history_panel");
+      return saved !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("intervox_show_history_panel", String(showHistoryPanel));
+    } catch {}
+  }, [showHistoryPanel]);
+
   useEffect(() => {
     return () => {
       if (browserLocalPreviewRef.current) {
@@ -578,12 +593,25 @@ export function Player() {
           <FolderOpen className="w-4 h-4" />
           <span className="hidden sm:inline">OPEN FILE</span>
         </button>
+
+        {/* Toggle History Button */}
+        <button
+          onClick={() => setShowHistoryPanel(!showHistoryPanel)}
+          className={`p-2 border rounded-sm transition-all flex items-center justify-center shrink-0 ${
+            showHistoryPanel
+              ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/40 border-glow"
+              : "border-slate-800 text-slate-400 hover:border-slate-700 hover:bg-slate-800/40"
+          }`}
+          title={showHistoryPanel ? "隐藏播放历史" : "显示播放历史"}
+        >
+          <History className="w-4 h-4" />
+        </button>
       </div>
 
       {/* Main Player & Metadata layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Video Player Box with drag and drop */}
-        <div className="lg:col-span-2 space-y-4">
+        <div className={`${showHistoryPanel ? "lg:col-span-2" : "lg:col-span-3"} space-y-4`}>
           <div
             ref={playerContainerRef}
             tabIndex={-1}
@@ -797,98 +825,100 @@ export function Player() {
         </div>
 
         {/* Playback History Card */}
-        <div className="border th-border th-bg-card p-4 rounded-sm flex flex-col h-[400px] lg:h-[500px]">
-          <div className="border-b th-border pb-2 flex justify-between items-center mb-3">
-            <span className="font-extrabold th-text tracking-wide text-xs uppercase text-glow text-cyan-400">
-              PLAYBACK HISTORY // 播放历史记录
-            </span>
-            {playbackHistory.length > 0 && (
-              <button
-                onClick={clearPlaybackHistory}
-                className="text-[10px] text-red-400 hover:text-red-300 font-bold uppercase tracking-wider transition-colors"
-              >
-                Clear All
-              </button>
-            )}
-          </div>
+        {showHistoryPanel && (
+          <div className="border th-border th-bg-card p-4 rounded-sm flex flex-col h-[400px] lg:h-[500px]">
+            <div className="border-b th-border pb-2 flex justify-between items-center mb-3">
+              <span className="font-extrabold th-text tracking-wide text-xs uppercase text-glow text-cyan-400">
+                PLAYBACK HISTORY // 播放历史记录
+              </span>
+              {playbackHistory.length > 0 && (
+                <button
+                  onClick={clearPlaybackHistory}
+                  className="text-[10px] text-red-400 hover:text-red-300 font-bold uppercase tracking-wider transition-colors"
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
 
-          {/* History List */}
-          <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
-            {playbackHistory.length > 0 ? (
-              playbackHistory.map((item) => {
-                const isLocal = item.inputMode === "local_file";
-                const isCurrentlyPlaying = activeMediaInput === item.url;
-                
-                return (
-                  <div
-                    key={item.id}
-                    className={`group border p-2 flex items-center justify-between rounded-sm transition-all hover:bg-cyan-500/5 ${
-                      isCurrentlyPlaying
-                        ? "border-cyan-500/40 bg-cyan-500/5 border-glow"
-                        : "border-transparent bg-black/20 hover:border-slate-800"
-                    }`}
-                  >
+            {/* History List */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+              {playbackHistory.length > 0 ? (
+                playbackHistory.map((item) => {
+                  const isLocal = item.inputMode === "local_file";
+                  const isCurrentlyPlaying = activeMediaInput === item.url;
+                  
+                  return (
                     <div
-                      onClick={() => {
-                        if (isLocal) {
-                          setLocalMediaPath(item.url);
-                          setMediaInputMode("local_file");
-                          setMediaUrl("");
-                        } else {
-                          setMediaUrl(item.url);
-                          setLocalMediaPath("");
-                          setMediaInputMode("public_url");
-                        }
-                        setIsPlaying(true);
-                      }}
-                      className="flex items-start gap-2.5 min-w-0 flex-1 cursor-pointer"
+                      key={item.id}
+                      className={`group border p-2 flex items-center justify-between rounded-sm transition-all hover:bg-cyan-500/5 ${
+                        isCurrentlyPlaying
+                          ? "border-cyan-500/40 bg-cyan-500/5 border-glow"
+                          : "border-transparent bg-black/20 hover:border-slate-800"
+                      }`}
                     >
-                      {isLocal ? (
-                        <FileVideo className={`w-4 h-4 mt-0.5 shrink-0 ${isCurrentlyPlaying ? "text-cyan-400" : "text-slate-500"}`} />
-                      ) : (
-                        <Languages className={`w-4 h-4 mt-0.5 shrink-0 ${isCurrentlyPlaying ? "text-cyan-400" : "text-slate-500"}`} />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <span
-                          className={`font-semibold text-xs block truncate ${
-                            isCurrentlyPlaying ? "text-cyan-400 text-glow" : "th-text"
-                          }`}
-                          title={item.name}
-                        >
-                          {item.name}
-                        </span>
-                        <span className="text-[9px] th-text-muted block mt-0.5 font-medium">
-                          {formatHistoryTime(item.timestamp)}
-                        </span>
+                      <div
+                        onClick={() => {
+                          if (isLocal) {
+                            setLocalMediaPath(item.url);
+                            setMediaInputMode("local_file");
+                            setMediaUrl("");
+                          } else {
+                            setMediaUrl(item.url);
+                            setLocalMediaPath("");
+                            setMediaInputMode("public_url");
+                          }
+                          setIsPlaying(true);
+                        }}
+                        className="flex items-start gap-2.5 min-w-0 flex-1 cursor-pointer"
+                      >
+                        {isLocal ? (
+                          <FileVideo className={`w-4 h-4 mt-0.5 shrink-0 ${isCurrentlyPlaying ? "text-cyan-400" : "text-slate-500"}`} />
+                        ) : (
+                          <Languages className={`w-4 h-4 mt-0.5 shrink-0 ${isCurrentlyPlaying ? "text-cyan-400" : "text-slate-500"}`} />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <span
+                            className={`font-semibold text-xs block truncate ${
+                              isCurrentlyPlaying ? "text-cyan-400 text-glow" : "th-text"
+                            }`}
+                            title={item.name}
+                          >
+                            {item.name}
+                          </span>
+                          <span className="text-[9px] th-text-muted block mt-0.5 font-medium">
+                            {formatHistoryTime(item.timestamp)}
+                          </span>
+                        </div>
                       </div>
-                    </div>
 
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deletePlaybackHistoryItem(item.id);
-                      }}
-                      className="p-1 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ml-2 shrink-0"
-                      title="删除该记录"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center text-center text-slate-600 space-y-2 py-8">
-                <FolderOpen className="w-8 h-8 opacity-40 text-slate-500" />
-                <span className="text-[11px] font-bold uppercase tracking-wider block">
-                  暂无播放记录
-                </span>
-                <span className="text-[9px] text-slate-700">
-                  打开本地文件或粘贴 URL 播放视频后，历史记录将自动显示在此处。
-                </span>
-              </div>
-            )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deletePlaybackHistoryItem(item.id);
+                        }}
+                        className="p-1 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ml-2 shrink-0"
+                        title="删除该记录"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-center text-slate-600 space-y-2 py-8">
+                  <FolderOpen className="w-8 h-8 opacity-40 text-slate-500" />
+                  <span className="text-[11px] font-bold uppercase tracking-wider block">
+                    暂无播放记录
+                  </span>
+                  <span className="text-[9px] text-slate-700">
+                    打开本地文件或粘贴 URL 播放视频后，历史记录将自动显示在此处。
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
