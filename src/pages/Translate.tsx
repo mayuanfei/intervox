@@ -300,28 +300,6 @@ export function Translate() {
                   </div>
                 )}
 
-                {config.provider === "volc_doubao" && (
-                  <div className="space-y-1">
-                    <label className="th-text-3 text-[10px] uppercase font-bold">
-                      Doubao Resource ID
-                    </label>
-                    <input
-                      type="text"
-                      value={config.volc_doubao.resource_id}
-                      onChange={(e) =>
-                        setConfig((prev) => ({
-                          ...prev,
-                          volc_doubao: {
-                            ...prev.volc_doubao,
-                            resource_id: e.target.value,
-                          },
-                        }))
-                      }
-                      className="w-full px-3 py-1.5 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                    />
-                  </div>
-                )}
-
                 {config.provider === "local_whisper" && (
                   <div className="space-y-1">
                     <label className="th-text-3 text-[10px] uppercase font-bold">

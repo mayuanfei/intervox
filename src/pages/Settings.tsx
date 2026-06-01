@@ -126,16 +126,9 @@ export function Settings() {
               </div>
             </div>
 
-            <label className="flex items-center gap-3 cursor-pointer pt-2">
-              <input
-                type="checkbox"
-                defaultChecked={true}
-                className="w-4 h-4 border th-border rounded bg-transparent checked:bg-cyan-500 focus:outline-none"
-              />
-              <span className="th-text-2 font-medium">
-                Save output alongside source video (Overrides Base Path)
-              </span>
-            </label>
+            <p className="pt-2 th-text-2 text-xs">
+              Temporary ASR audio, voice-clone slices, and playback previews are retained under this directory.
+            </p>
           </div>
         </div>
 

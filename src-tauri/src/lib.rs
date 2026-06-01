@@ -1,6 +1,7 @@
 mod asr;
 mod credentials;
 mod export;
+mod storage;
 mod translation;
 mod tts;
 
@@ -277,10 +278,15 @@ async fn export_dubbed_video(request: ExportRequest) -> Result<ExportResult, Str
 }
 
 #[tauri::command]
-async fn prepare_video_for_playback(input_path: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || export::prepare_video_for_playback(input_path))
-        .await
-        .map_err(|error| format!("转码任务异常终止：{error}"))?
+async fn prepare_video_for_playback(
+    input_path: String,
+    output_dir: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        export::prepare_video_for_playback(input_path, output_dir)
+    })
+    .await
+    .map_err(|error| format!("转码任务异常终止：{error}"))?
 }
 
 #[tauri::command]

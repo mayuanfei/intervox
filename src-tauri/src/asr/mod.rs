@@ -288,6 +288,8 @@ impl CredentialValidationResult {
 pub struct AsrTranscriptionRequest {
     pub job_id: Option<String>,
     pub audio_path: String,
+    #[serde(default)]
+    pub output_dir: Option<String>,
     pub config: AsrConfig,
 }
 
@@ -451,9 +453,12 @@ impl AsrProvider for AliyunBailianProvider {
             let file_url = validate_public_media_url(&request.audio_path)?.to_string();
             transcribe_bailian_file_url(&client, &api_key, request, self.id(), &file_url)
         } else {
-            let temp_audio_paths =
-                extract_audio_chunks_to_temp(&request.audio_path, BAILIAN_LOCAL_CHUNK_SECONDS)
-                    .map_err(|e| AsrError::LocalProcessing(e))?;
+            let temp_audio_paths = extract_audio_chunks_to_temp(
+                &request.audio_path,
+                BAILIAN_LOCAL_CHUNK_SECONDS,
+                request.output_dir.as_deref(),
+            )
+            .map_err(AsrError::LocalProcessing)?;
             let transcription_result = (|| -> Result<TranscriptDocument, AsrError> {
                 let policy = get_dashscope_upload_policy(
                     &client,
@@ -496,9 +501,6 @@ impl AsrProvider for AliyunBailianProvider {
                 Ok(document)
             })();
 
-            for temp_audio_path in temp_audio_paths {
-                let _ = std::fs::remove_file(temp_audio_path);
-            }
             transcription_result
         }
     }
@@ -797,9 +799,12 @@ impl AsrProvider for VolcDoubaoProvider {
             return transcribe_volc_audio(&client, &api_key, resource_id, uid, request, audio);
         }
 
-        let temp_audio_paths =
-            extract_audio_chunks_to_temp(&request.audio_path, VOLC_LOCAL_CHUNK_SECONDS)
-                .map_err(AsrError::LocalProcessing)?;
+        let temp_audio_paths = extract_audio_chunks_to_temp(
+            &request.audio_path,
+            VOLC_LOCAL_CHUNK_SECONDS,
+            request.output_dir.as_deref(),
+        )
+        .map_err(AsrError::LocalProcessing)?;
         let transcription_result = (|| -> Result<TranscriptDocument, AsrError> {
             let mut document = TranscriptDocument {
                 source_language: request.config.source_language.clone(),
@@ -837,9 +842,6 @@ impl AsrProvider for VolcDoubaoProvider {
             Ok(document)
         })();
 
-        for temp_audio_path in temp_audio_paths {
-            let _ = std::fs::remove_file(temp_audio_path);
-        }
         transcription_result
     }
 }
@@ -1050,18 +1052,15 @@ fn truncate_for_error(text: &str) -> String {
 fn extract_audio_chunks_to_temp(
     input_video_path: &str,
     chunk_seconds: u64,
+    output_dir: Option<&str>,
 ) -> Result<Vec<std::path::PathBuf>, String> {
     let input_path = std::path::Path::new(input_video_path);
     if !input_path.exists() {
         return Err("Input video file does not exist.".to_string());
     }
 
-    let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    if dir.ends_with("src-tauri") {
-        dir.pop();
-    }
-    let temp_dir = dir.join("exports").join("temp_audio");
-    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    let temp_dir = crate::storage::ensure_output_subdir(output_dir, "temp_audio")
+        .map_err(|e| e.to_string())?;
 
     let chunk_prefix = format!("temp_asr_chunk_{}", uuid::Uuid::new_v4());
     let output_pattern = temp_dir.join(format!("{chunk_prefix}_%03d.mp3"));
@@ -1255,6 +1254,7 @@ mod tests {
             &AsrTranscriptionRequest {
                 job_id: None,
                 audio_path: "https://example.com/audio.mp3".to_string(),
+                output_dir: None,
                 config,
             },
             AsrProviderId::VolcDoubao,
@@ -1275,6 +1275,7 @@ mod tests {
         let error = transcribe(AsrTranscriptionRequest {
             job_id: None,
             audio_path: "/tmp/audio.wav".to_string(),
+            output_dir: None,
             config,
         })
         .expect_err("missing model path should fail");
@@ -1303,6 +1304,7 @@ mod tests {
             &AsrTranscriptionRequest {
                 job_id: None,
                 audio_path: "https://example.com/audio.mp3".to_string(),
+                output_dir: None,
                 config,
             },
             AsrProviderId::AliyunBailian,
@@ -1350,6 +1352,7 @@ mod tests {
         let request = AsrTranscriptionRequest {
             job_id: None,
             audio_path: "https://example.com/audio.mp3".to_string(),
+            output_dir: None,
             config: default_asr_config(),
         };
         let response = json!({

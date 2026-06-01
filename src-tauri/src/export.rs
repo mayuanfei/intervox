@@ -6,7 +6,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
-use uuid::Uuid;
 
 const MIN_SEGMENT_SLOT_MS: u64 = 350;
 const SEGMENT_FIT_PADDING_MS: u64 = 80;
@@ -765,21 +764,13 @@ fn command_error_summary(stderr: &[u8]) -> String {
 }
 
 fn resolve_output_dir(output_dir: Option<&str>) -> Result<PathBuf, std::io::Error> {
-    if let Some(path) = output_dir.map(str::trim).filter(|path| !path.is_empty()) {
-        return Ok(PathBuf::from(path));
-    }
-
-    let mut dir = std::env::current_dir()?;
-    if dir.ends_with("src-tauri") {
-        dir.pop();
-    }
-
-    Ok(dir
-        .join("exports")
-        .join(format!("video_{}", Uuid::new_v4())))
+    crate::storage::configured_output_root(output_dir)
 }
 
-pub fn prepare_video_for_playback(input_path: String) -> Result<String, String> {
+pub fn prepare_video_for_playback(
+    input_path: String,
+    output_dir: Option<String>,
+) -> Result<String, String> {
     let path = Path::new(&input_path);
     if !path.exists() {
         return Err("视频文件不存在。".to_string());
@@ -801,12 +792,8 @@ pub fn prepare_video_for_playback(input_path: String) -> Result<String, String> 
         return Ok(input_path);
     }
 
-    let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    if dir.ends_with("src-tauri") {
-        dir.pop();
-    }
-    let temp_dir = dir.join("exports").join("temp_playback");
-    fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    let temp_dir = crate::storage::ensure_output_subdir(output_dir.as_deref(), "temp_playback")
+        .map_err(|e| e.to_string())?;
 
     // Include the conversion profile and file metadata so old incompatible previews are not reused.
     use std::collections::hash_map::DefaultHasher;

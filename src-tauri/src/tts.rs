@@ -139,7 +139,7 @@ where
             .ok_or_else(|| TtsError::Api("进行声音克隆时必须提供原视频路径。".to_string()))?;
 
         // 1. Extract 15s human voice slice
-        let temp_slice = extract_slice_to_temp(video_path)
+        let temp_slice = extract_slice_to_temp(video_path, request.output_dir.as_deref())
             .map_err(|e| TtsError::Api(format!("提取克隆音源切片失败：{e}")))?;
 
         // 2. Upload to DashScope OSS & enroll
@@ -153,9 +153,6 @@ where
 
             enroll_voice(&client, &api_key, &oss_url)
         })();
-
-        // Clean up temp slice
-        let _ = std::fs::remove_file(&temp_slice);
 
         voice = upload_result?;
 
@@ -312,12 +309,10 @@ where
             TtsError::Api("进行火山引擎声音克隆时必须提供原视频路径。".to_string())
         })?;
 
-        let temp_slice = extract_slice_to_temp(video_path)
+        let temp_slice = extract_slice_to_temp(video_path, request.output_dir.as_deref())
             .map_err(|e| TtsError::Api(format!("提取克隆音源切片失败：{e}")))?;
 
-        let speaker_id = enroll_volc_voice(&client, &api_key, &app_id, &temp_slice);
-        let _ = std::fs::remove_file(&temp_slice);
-        speaker_id?
+        enroll_volc_voice(&client, &api_key, &app_id, &temp_slice)?
     } else {
         // Standard synthesis: use the voice preset or default
         let voice_type = normalize_volc_tts_voice(&request.voice);
@@ -481,18 +476,17 @@ fn map_volc_console_instance_id(
     }
 }
 
-fn extract_slice_to_temp(input_video_path: &str) -> Result<std::path::PathBuf, String> {
+fn extract_slice_to_temp(
+    input_video_path: &str,
+    output_dir: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
     let input_path = std::path::Path::new(input_video_path);
     if !input_path.exists() {
         return Err("输入视频文件不存在。".to_string());
     }
 
-    let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    if dir.ends_with("src-tauri") {
-        dir.pop();
-    }
-    let temp_dir = dir.join("exports").join("temp_audio");
-    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    let temp_dir = crate::storage::ensure_output_subdir(output_dir, "temp_audio")
+        .map_err(|e| e.to_string())?;
 
     let output_audio_path = temp_dir.join(format!("temp_clone_{}.mp3", uuid::Uuid::new_v4()));
 
@@ -891,16 +885,7 @@ fn resolve_output_dir(
     output_dir: Option<&str>,
     cache_key: &str,
 ) -> Result<PathBuf, std::io::Error> {
-    let mut base_dir = if let Some(path) = output_dir.map(str::trim).filter(|path| !path.is_empty())
-    {
-        PathBuf::from(path)
-    } else {
-        let mut dir = std::env::current_dir()?;
-        if dir.ends_with("src-tauri") {
-            dir.pop();
-        }
-        dir.join("exports")
-    };
+    let mut base_dir = crate::storage::configured_output_root(output_dir)?;
 
     base_dir.push(format!("tts_{cache_key}"));
     Ok(base_dir)

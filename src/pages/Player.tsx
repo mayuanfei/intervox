@@ -24,6 +24,7 @@ export function Player() {
     mediaInputMode,
     setMediaInputMode,
     setLocalMediaPath,
+    outputDir,
     transcript,
     translation,
     startFullPipeline,
@@ -72,7 +73,10 @@ export function Player() {
         try {
           if (activeMediaInput.startsWith("/") || activeMediaInput.includes(":/") || activeMediaInput.includes(":\\")) {
             setIsPreparingPlayback(true);
-            const playablePath = await invoke<string>("prepare_video_for_playback", { inputPath: activeMediaInput });
+            const playablePath = await invoke<string>("prepare_video_for_playback", {
+              inputPath: activeMediaInput,
+              outputDir: outputDir.trim() || null,
+            });
             if (!isCurrent) return;
             const converted = convertFileSrc(playablePath);
             setMediaSrc(converted);
@@ -102,7 +106,7 @@ export function Player() {
     return () => {
       isCurrent = false;
     };
-  }, [activeMediaInput, mediaInputMode]);
+  }, [activeMediaInput, mediaInputMode, outputDir]);
 
   // Handle Play / Pause toggles
   useEffect(() => {

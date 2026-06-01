@@ -162,6 +162,7 @@ const IntervoxContext = createContext<IntervoxContextType | undefined>(undefined
 const ASR_CACHE_PREFIX = "intervox:asr:v2:";
 const TRANSLATION_CACHE_PREFIX = "intervox:translation:v2:";
 const TTS_CACHE_PREFIX = "intervox:tts:v1:";
+const OUTPUT_DIR_STORAGE_KEY = "intervox_output_dir";
 
 function hashString(value: string) {
   let hash = 5381;
@@ -199,6 +200,11 @@ function isPlaceholderTranscript(document?: TranscriptDocument | null) {
 
 function isVolcSpeechMtModel(model: string) {
   return model.trim() === "volc-speech-mt";
+}
+
+function outputPath(outputDir: string, fileName: string) {
+  const baseDir = outputDir.trim().replace(/[\\/]+$/, "");
+  return baseDir ? `${baseDir}/${fileName}` : fileName;
 }
 
 export function IntervoxProvider({ children }: { children: React.ReactNode }) {
@@ -288,12 +294,24 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     }
   }, [config.provider]);
   const [ttsRate, setTtsRate] = useState(1);
-  const [outputDir, setOutputDir] = useState("");
+  const [outputDir, setOutputDir] = useState(() => {
+    try {
+      return localStorage.getItem(OUTPUT_DIR_STORAGE_KEY) || "";
+    } catch {
+      return "";
+    }
+  });
   const [replaceOriginalAudio, setReplaceOriginalAudio] = useState(false);
   const [originalAudioVolume, setOriginalAudioVolume] = useState(0.25);
   const [voiceoverVolume, setVoiceoverVolume] = useState(1);
   const [showEnglishSubtitles, setShowEnglishSubtitles] = useState(false);
   const [showTargetLanguageSubtitles, setShowTargetLanguageSubtitles] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(OUTPUT_DIR_STORAGE_KEY, outputDir);
+    } catch {}
+  }, [outputDir]);
 
   // Task list and queue states
   const [tasks, setTasks] = useState<IntervoxTask[]>(() => {
@@ -694,7 +712,14 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     try {
       const result = await invokeOrFallback<TranscriptDocument>(
         "asr_transcribe",
-        { request: { job_id: `job_${Date.now()}`, audio_path: activeMediaInput, config } },
+        {
+          request: {
+            job_id: `job_${Date.now()}`,
+            audio_path: activeMediaInput,
+            output_dir: outputDir.trim() || null,
+            config,
+          }
+        },
         {
           source_language: config.source_language,
           target_language: config.target_language,
@@ -911,8 +936,8 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
           }
         },
         {
-          voiceover_path: "exports/voiceover.wav",
-          video_path: "exports/dubbed_completed.mp4",
+          voiceover_path: outputPath(outputDir, "voiceover.wav"),
+          video_path: outputPath(outputDir, "dubbed_completed.mp4"),
         }
       );
       setExportResult(result);
@@ -992,7 +1017,14 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         );
         asrResult = await invokeOrFallback<TranscriptDocument>(
           "asr_transcribe",
-          { request: { job_id: `job_${Date.now()}`, audio_path: mediaInput, config: configToUse } },
+          {
+            request: {
+              job_id: `job_${Date.now()}`,
+              audio_path: mediaInput,
+              output_dir: outputDir.trim() || null,
+              config: configToUse,
+            }
+          },
           {
             source_language: configToUse.source_language,
             target_language: configToUse.target_language,
@@ -1175,8 +1207,8 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
           }
         },
         {
-          voiceover_path: "exports/voiceover.wav",
-          video_path: `exports/dubbed_${Date.now()}.mp4`,
+          voiceover_path: outputPath(outputDir, "voiceover.wav"),
+          video_path: outputPath(outputDir, `dubbed_${Date.now()}.mp4`),
         }
       );
 
