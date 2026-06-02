@@ -61,6 +61,9 @@ async fn asr_transcribe(
         .job_id
         .clone()
         .unwrap_or_else(|| "ad-hoc".to_string());
+
+    asr::register_job(job_id.clone());
+
     app.emit(
         "asr-progress",
         serde_json::json!({
@@ -69,11 +72,20 @@ async fn asr_transcribe(
             "progress": 0.0
         }),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| {
+        asr::deregister_job(&job_id);
+        error.to_string()
+    })?;
 
+    let job_id_for_task = job_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || asr::transcribe(request))
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(move |error| {
+            asr::deregister_job(&job_id_for_task);
+            error.to_string()
+        })?;
+
+    asr::deregister_job(&job_id);
 
     match result {
         Ok(document) => {
@@ -120,6 +132,8 @@ fn asr_cancel(job_id: String) -> Result<(), String> {
     if job_id.trim().is_empty() {
         return Err("job_id 不能为空。".to_string());
     }
+
+    asr::cancel_job(&job_id);
 
     Ok(())
 }

@@ -321,6 +321,8 @@ pub enum AsrError {
     Credential(#[from] CredentialError),
     #[error("本地音频提取或上传失败：{0}")]
     LocalProcessing(String),
+    #[error("任务已被用户取消。")]
+    Cancelled,
 }
 
 pub trait AsrProvider {
@@ -453,7 +455,7 @@ impl AsrProvider for AliyunBailianProvider {
             let file_url = validate_public_media_url(&request.audio_path)?.to_string();
             transcribe_bailian_file_url(&client, &api_key, request, self.id(), &file_url)
         } else {
-            let temp_audio_paths = extract_audio_chunks_to_temp(
+            let (temp_dir, temp_audio_paths) = extract_audio_chunks_to_temp(
                 &request.audio_path,
                 BAILIAN_LOCAL_CHUNK_SECONDS,
                 request.output_dir.as_deref(),
@@ -475,6 +477,11 @@ impl AsrProvider for AliyunBailianProvider {
                 let mut chunk_offset_ms = 0;
 
                 for (chunk_index, temp_audio_path) in temp_audio_paths.iter().enumerate() {
+                    if let Some(ref job_id) = request.job_id {
+                        if is_job_cancelled(job_id) {
+                            return Err(AsrError::Cancelled);
+                        }
+                    }
                     let file_url = upload_file_to_dashscope_oss(&client, &policy, temp_audio_path)?;
                     let mut chunk_document = transcribe_bailian_file_url(
                         &client,
@@ -501,6 +508,7 @@ impl AsrProvider for AliyunBailianProvider {
                 Ok(document)
             })();
 
+            let _ = std::fs::remove_dir_all(&temp_dir);
             transcription_result
         }
     }
@@ -605,6 +613,11 @@ fn poll_bailian_task(
     );
 
     for _ in 0..90 {
+        if let Some(ref job_id) = request.job_id {
+            if is_job_cancelled(job_id) {
+                return Err(AsrError::Cancelled);
+            }
+        }
         let response = client
             .get(&endpoint)
             .bearer_auth(api_key)
@@ -759,11 +772,7 @@ impl AsrProvider for GoogleChirp3Provider {
             return Err(AsrError::MissingGoogleProjectId);
         }
 
-        Ok(demo_transcript(
-            self.id(),
-            request,
-            "Google Chirp 3 transcript placeholder",
-        ))
+        Err(AsrError::Api("Google Chirp3 识别服务尚未接入，目前为占位实现。".to_string()))
     }
 }
 
@@ -799,7 +808,7 @@ impl AsrProvider for VolcDoubaoProvider {
             return transcribe_volc_audio(&client, &api_key, resource_id, uid, request, audio);
         }
 
-        let temp_audio_paths = extract_audio_chunks_to_temp(
+        let (temp_dir, temp_audio_paths) = extract_audio_chunks_to_temp(
             &request.audio_path,
             VOLC_LOCAL_CHUNK_SECONDS,
             request.output_dir.as_deref(),
@@ -815,6 +824,11 @@ impl AsrProvider for VolcDoubaoProvider {
             let mut chunk_offset_ms = 0;
 
             for (chunk_index, temp_audio_path) in temp_audio_paths.iter().enumerate() {
+                if let Some(ref job_id) = request.job_id {
+                    if is_job_cancelled(job_id) {
+                        return Err(AsrError::Cancelled);
+                    }
+                }
                 let audio_bytes = std::fs::read(temp_audio_path).map_err(|error| {
                     AsrError::LocalProcessing(format!(
                         "Unable to read temporary audio chunk: {error}"
@@ -842,6 +856,7 @@ impl AsrProvider for VolcDoubaoProvider {
             Ok(document)
         })();
 
+        let _ = std::fs::remove_dir_all(&temp_dir);
         transcription_result
     }
 }
@@ -930,11 +945,7 @@ impl AsrProvider for LocalWhisperProvider {
             return Err(AsrError::MissingWhisperModelPath);
         }
 
-        Ok(demo_transcript(
-            self.id(),
-            request,
-            "Local Whisper transcript placeholder",
-        ))
+        Err(AsrError::Api("本地 Whisper 识别服务尚未接入，目前为占位实现。".to_string()))
     }
 }
 
@@ -1053,16 +1064,18 @@ fn extract_audio_chunks_to_temp(
     input_video_path: &str,
     chunk_seconds: u64,
     output_dir: Option<&str>,
-) -> Result<Vec<std::path::PathBuf>, String> {
+) -> Result<(std::path::PathBuf, Vec<std::path::PathBuf>), String> {
     let input_path = std::path::Path::new(input_video_path);
     if !input_path.exists() {
         return Err("Input video file does not exist.".to_string());
     }
 
-    let temp_dir = crate::storage::ensure_output_subdir(output_dir, "temp_audio")
+    let temp_root = crate::storage::ensure_output_subdir(output_dir, "temp_audio")
         .map_err(|e| e.to_string())?;
+    let temp_dir = temp_root.join(format!("task_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
-    let chunk_prefix = format!("temp_asr_chunk_{}", uuid::Uuid::new_v4());
+    let chunk_prefix = "temp_asr_chunk";
     let output_pattern = temp_dir.join(format!("{chunk_prefix}_%03d.mp3"));
     let mut cmd = std::process::Command::new(crate::export::ffmpeg_path());
     cmd.arg("-y")
@@ -1090,25 +1103,30 @@ fn extract_audio_chunks_to_temp(
         .map_err(|_| "FFmpeg was not found. Please install FFmpeg first.".to_string())?;
     if !output.status.success() {
         let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+        let _ = std::fs::remove_dir_all(&temp_dir);
         return Err(format!("Audio chunk extraction failed: {err_msg}"));
     }
 
     let mut chunks = std::fs::read_dir(&temp_dir)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            e.to_string()
+        })?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(&chunk_prefix) && name.ends_with(".mp3"))
+                .is_some_and(|name| name.starts_with(chunk_prefix) && name.ends_with(".mp3"))
         })
         .collect::<Vec<_>>();
     chunks.sort();
     if chunks.is_empty() {
+        let _ = std::fs::remove_dir_all(&temp_dir);
         return Err("FFmpeg did not produce any audio chunks.".to_string());
     }
 
-    Ok(chunks)
+    Ok((temp_dir, chunks))
 }
 
 fn audio_duration_ms(path: &std::path::Path) -> Result<u64, AsrError> {
@@ -1203,6 +1221,47 @@ pub fn upload_file_to_dashscope_oss(
         .error_for_status()?;
 
     Ok(format!("oss://{}", key))
+}
+
+static ACTIVE_JOBS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>> = std::sync::OnceLock::new();
+
+pub fn register_job(job_id: String) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let cancel_token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Ok(mut jobs) = ACTIVE_JOBS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new())).lock() {
+        jobs.insert(job_id, cancel_token.clone());
+    }
+    cancel_token
+}
+
+pub fn deregister_job(job_id: &str) {
+    if let Some(jobs) = ACTIVE_JOBS.get() {
+        if let Ok(mut jobs) = jobs.lock() {
+            jobs.remove(job_id);
+        }
+    }
+}
+
+pub fn cancel_job(job_id: &str) -> bool {
+    if let Some(jobs) = ACTIVE_JOBS.get() {
+        if let Ok(jobs) = jobs.lock() {
+            if let Some(cancel_token) = jobs.get(job_id) {
+                cancel_token.store(true, std::sync::atomic::Ordering::SeqCst);
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn is_job_cancelled(job_id: &str) -> bool {
+    if let Some(jobs) = ACTIVE_JOBS.get() {
+        if let Ok(jobs) = jobs.lock() {
+            if let Some(cancel_token) = jobs.get(job_id) {
+                return cancel_token.load(std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]

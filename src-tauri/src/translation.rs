@@ -208,7 +208,10 @@ where
     });
 
     Ok(TranslationDocument {
-        source_language: format!("{:?}", request.transcript.source_language),
+        source_language: serde_json::to_value(&request.transcript.source_language)
+            .ok()
+            .and_then(|v| v.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "auto".to_string()),
         target_language: request.transcript.target_language,
         provider: backend.document_provider().to_string(),
         segments,
@@ -254,7 +257,7 @@ fn request_translation_document(
     backend: TranslationBackend,
 ) -> Result<TranslationDocument, TranslationError> {
     let response = request_translation_batch(client, api_key, request, backend)?;
-    Ok(parse_translation_response(request, &response))
+    Ok(parse_translation_response(request, &response, backend.document_provider()))
 }
 
 fn missing_transcript_segments(
@@ -716,6 +719,7 @@ fn build_translation_prompt(request: &TranslationRequest) -> String {
 fn parse_translation_response(
     request: &TranslationRequest,
     response: &Value,
+    provider: &str,
 ) -> TranslationDocument {
     let translations = response
         .get("segments")
@@ -748,9 +752,12 @@ fn parse_translation_response(
         .collect();
 
     TranslationDocument {
-        source_language: format!("{:?}", request.transcript.source_language),
+        source_language: serde_json::to_value(&request.transcript.source_language)
+            .ok()
+            .and_then(|v| v.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "auto".to_string()),
         target_language: request.transcript.target_language.clone(),
-        provider: "aliyun_qwen".to_string(),
+        provider: provider.to_string(),
         segments,
     }
 }
@@ -875,7 +882,7 @@ mod tests {
         });
 
         let response = parse_volc_speech_mt_response(&request, &response).unwrap();
-        let document = parse_translation_response(&request, &response);
+        let document = parse_translation_response(&request, &response, "volc_speech_mt");
 
         assert_eq!(document.segments[0].id, "seg_0");
         assert_eq!(document.segments[0].translated_text, "你好");
@@ -942,7 +949,7 @@ mod tests {
             }]
         });
 
-        let document = parse_translation_response(&request, &response);
+        let document = parse_translation_response(&request, &response, "aliyun_qwen");
 
         assert_eq!(document.segments[0].translated_text, "你好，世界");
         assert_eq!(document.segments[0].source_text, "Hello world");
@@ -959,6 +966,7 @@ mod tests {
                     "translated_text": "你好"
                 }]
             }),
+            "aliyun_qwen",
         );
 
         let missing = missing_transcript_segments(&request, &document);
@@ -974,6 +982,7 @@ mod tests {
                     "translated_text": "世界"
                 }]
             }),
+            "aliyun_qwen",
         );
         merge_translation_segments(&mut document, retry_document);
 
@@ -1018,7 +1027,7 @@ mod tests {
             }]
         });
 
-        let document = parse_translation_response(&request, &response);
+        let document = parse_translation_response(&request, &response, "aliyun_qwen");
         let error =
             ensure_translation_complete(&document).expect_err("missing segment should fail");
 

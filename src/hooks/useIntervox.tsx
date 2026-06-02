@@ -12,6 +12,9 @@ import type {
   TranscriptDocument,
   TranslationDocument,
   TtsDocument,
+  CachedTranscript,
+  CachedTranslation,
+  CachedTts,
 } from "../types/asr";
 
 export interface PlaybackHistoryItem {
@@ -43,6 +46,46 @@ export interface IntervoxTask {
   outputVideoPath?: string;
   duration?: string;
   logLines: string[];
+}
+
+interface AsrProgressPayload {
+  job_id: string;
+  stage: "started" | "completed";
+  progress: number;
+}
+
+interface AsrFailedPayload {
+  job_id: string;
+  message: string;
+}
+
+interface TranslationProgressPayload {
+  stage: "queued" | "started" | "batch_completed" | "completed";
+  completed_segments?: number;
+  total_segments?: number;
+  progress?: number;
+}
+
+interface TranslationFailedPayload {
+  message: string;
+}
+
+interface TtsProgressPayload {
+  stage: "started" | "segment_completed" | "completed";
+  completed_segments?: number;
+  total_segments?: number;
+  progress?: number;
+}
+
+interface TtsFailedPayload {
+  message: string;
+}
+
+interface ExportProgressPayload {
+  stage: "started" | "completed" | string;
+  processed_ms?: number;
+  total_ms?: number;
+  progress?: number;
 }
 
 export type MediaInputMode = "public_url" | "local_file";
@@ -132,8 +175,8 @@ interface IntervoxContextType {
   activeMediaInput: string;
   activeAsrCacheKey: string | null;
   activeTranslationCacheKey: string | null;
-  cachedTranscript: any;
-  cachedTranslation: any;
+  cachedTranscript: CachedTranscript | null;
+  cachedTranslation: CachedTranslation | null;
   
   // Volcengine Doubao Credential States
   volcCredentialDraft: string;
@@ -484,8 +527,8 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     );
   }, [activeAsrCacheKey, config.aliyun_bailian.deployment, config.target_language, translationModel]);
 
-  const [cachedTranscript, setCachedTranscript] = useState<any>(null);
-  const [cachedTranslation, setCachedTranslation] = useState<any>(null);
+  const [cachedTranscript, setCachedTranscript] = useState<CachedTranscript | null>(null);
+  const [cachedTranslation, setCachedTranslation] = useState<CachedTranslation | null>(null);
 
   // Read cache entries when key changes
   useEffect(() => {
@@ -493,7 +536,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       setCachedTranscript(null);
       return;
     }
-    const cached = readLocalJson<any>(`${ASR_CACHE_PREFIX}${activeAsrCacheKey}`);
+    const cached = readLocalJson<CachedTranscript>(`${ASR_CACHE_PREFIX}${activeAsrCacheKey}`);
     setCachedTranscript(isPlaceholderTranscript(cached?.document) ? null : cached);
   }, [activeAsrCacheKey]);
 
@@ -502,7 +545,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       setCachedTranslation(null);
       return;
     }
-    const cached = readLocalJson<any>(`${TRANSLATION_CACHE_PREFIX}${activeTranslationCacheKey}`);
+    const cached = readLocalJson<CachedTranslation>(`${TRANSLATION_CACHE_PREFIX}${activeTranslationCacheKey}`);
     setCachedTranslation(cached);
   }, [activeTranslationCacheKey]);
 
@@ -515,7 +558,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     let isMounted = true;
     const unlisteners: Array<() => void> = [];
 
-    void listen<any>("asr-progress", (event) => {
+    void listen<AsrProgressPayload>("asr-progress", (event) => {
       if (!isMounted) return;
       if (event.payload.stage === "started") {
         setTranscriptionStatus("阿里云百炼 ASR 任务提交，正在识别...");
@@ -532,7 +575,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       else unlisten();
     });
 
-    void listen<any>("asr-failed", (event) => {
+    void listen<AsrFailedPayload>("asr-failed", (event) => {
       if (!isMounted) return;
       const msg = event.payload.message || "识别失败。";
       setTranscriptionError(msg);
@@ -545,7 +588,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       else unlisten();
     });
 
-    void listen<any>("translation-progress", (event) => {
+    void listen<TranslationProgressPayload>("translation-progress", (event) => {
       if (!isMounted) return;
       const { stage, completed_segments = 0, total_segments = 0, progress = 0 } = event.payload;
       setTranslationProgress(progress);
@@ -568,7 +611,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       else unlisten();
     });
 
-    void listen<any>("translation-failed", (event) => {
+    void listen<TranslationFailedPayload>("translation-failed", (event) => {
       if (!isMounted) return;
       const msg = event.payload.message || "翻译失败。";
       setTranslationError(msg);
@@ -581,7 +624,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       else unlisten();
     });
 
-    void listen<any>("tts-progress", (event) => {
+    void listen<TtsProgressPayload>("tts-progress", (event) => {
       if (!isMounted) return;
       const { stage, completed_segments = 0, total_segments = 0, progress = 0 } = event.payload;
 
@@ -605,7 +648,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       else unlisten();
     });
 
-    void listen<any>("tts-failed", (event) => {
+    void listen<TtsFailedPayload>("tts-failed", (event) => {
       if (!isMounted) return;
       const msg = event.payload.message || "TTS 配音失败。";
       setTtsError(msg);
@@ -617,7 +660,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       else unlisten();
     });
 
-    void listen<any>("export-progress", (event) => {
+    void listen<ExportProgressPayload>("export-progress", (event) => {
       if (!isMounted) return;
       const { stage, processed_ms = 0, total_ms = 0, progress = 0 } = event.payload;
       const percent = Math.round(progress * 100);
@@ -777,14 +820,14 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       const result = await invokeOrFallback<CredentialValidationResult>(
         "asr_save_credential",
         { provider: "volc_doubao", secret: volcCredentialDraft },
-        { ok: volcCredentialDraft.trim().length > 0, provider: "volc_doubao" as any, message: "开发预览：火山引擎凭据已保存。" }
+        { ok: volcCredentialDraft.trim().length > 0, provider: "volc_doubao" as AsrProviderId, message: "开发预览：火山引擎凭据已保存。" }
       );
       setVolcStatus(result);
       if (result.ok) {
         setVolcCredentialDraft("");
       }
     } catch (e: any) {
-      setVolcStatus({ ok: false, provider: "volc_doubao" as any, message: e.message || "保存失败。" });
+      setVolcStatus({ ok: false, provider: "volc_doubao" as AsrProviderId, message: e.message || "保存失败。" });
     } finally {
       setIsSavingVolcCredential(false);
     }
@@ -796,11 +839,11 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       const result = await invokeOrFallback<CredentialValidationResult>(
         "asr_validate_credentials",
         { provider: "volc_doubao", config },
-        { ok: true, provider: "volc_doubao" as any, message: "火山引擎配置校验成功。" }
+        { ok: true, provider: "volc_doubao" as AsrProviderId, message: "火山引擎配置校验成功。" }
       );
       setVolcStatus(result);
     } catch (e: any) {
-      setVolcStatus({ ok: false, provider: "volc_doubao" as any, message: e.message || "校验失败。" });
+      setVolcStatus({ ok: false, provider: "volc_doubao" as AsrProviderId, message: e.message || "校验失败。" });
     }
   };
 
@@ -813,6 +856,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
 
   const startTranscription = async (forceRemote = false) => {
+    if (isTranscribing) return;
     if (!activeMediaInput) {
       setTranscriptionError("请提供音视频源。");
       return;
@@ -888,6 +932,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   };
 
   const startTranslation = async (forceRemote = false) => {
+    if (isTranslating) return;
     if (!transcript) {
       setTranslationError("请先完成 ASR 识别。");
       return;
@@ -1130,7 +1175,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       if (!isTaskStillRunning()) return;
       // Step 2: ASR
       let asrResult: TranscriptDocument;
-      const cachedAsr = readLocalJson<any>(`${ASR_CACHE_PREFIX}${asrCacheKey}`);
+      const cachedAsr = readLocalJson<CachedTranscript>(`${ASR_CACHE_PREFIX}${asrCacheKey}`);
 
       if (cachedAsr && cachedAsr.document && !isPlaceholderTranscript(cachedAsr.document)) {
         asrResult = cachedAsr.document;
@@ -1210,7 +1255,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       // Step 3: Translate
       if (!isTaskStillRunning()) return;
       let translateResult: TranslationDocument;
-      const cachedTrans = readLocalJson<any>(`${TRANSLATION_CACHE_PREFIX}${translationCacheKey}`);
+      const cachedTrans = readLocalJson<CachedTranslation>(`${TRANSLATION_CACHE_PREFIX}${translationCacheKey}`);
 
       if (cachedTrans && cachedTrans.document) {
         translateResult = cachedTrans.document;
@@ -1270,13 +1315,13 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       // Step 4: TTS / Voice Cloning
       if (!isTaskStillRunning()) return;
       let ttsResult: TtsDocument;
-      const cachedTts = readLocalJson<any>(`${TTS_CACHE_PREFIX}${ttsCacheKey}`);
+      const cachedTts = readLocalJson<CachedTts>(`${TTS_CACHE_PREFIX}${ttsCacheKey}`);
       const hasValidTtsCache = cachedTts?.document
         ? await invokeOrFallback<boolean>("validate_tts_cache", { tts: cachedTts.document }, false)
         : false;
 
       if (!isTaskStillRunning()) return;
-      if (hasValidTtsCache) {
+      if (hasValidTtsCache && cachedTts) {
         ttsResult = cachedTts.document;
         if (!isTaskStillRunning()) return;
         updateActiveTaskStage("tts_clone", 1.0, "检测到本地配音缓存，已直接载入（跳过重复 TTS 合成）。");

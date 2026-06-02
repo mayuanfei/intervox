@@ -111,3 +111,29 @@ export interface ExportResult {
   voiceover_path: string;
   video_path: string;
 }
+
+export interface CachedTranscript {
+  version: number;
+  cache_key: string;
+  media_input: string;
+  media_input_mode: "public_url" | "local_file";
+  updated_at: string;
+  document: TranscriptDocument;
+}
+
+export interface CachedTranslation {
+  version: number;
+  cache_key: string;
+  asr_cache_key: string;
+  target_language: TargetLanguageCode;
+  updated_at: string;
+  document: TranslationDocument;
+}
+
+export interface CachedTts {
+  version: number;
+  cache_key: string;
+  translation_cache_key: string;
+  updated_at: string;
+  document: TtsDocument;
+}

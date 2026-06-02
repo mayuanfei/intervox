@@ -284,6 +284,7 @@ where
 {
     let api_key = credentials
         .get(AsrProviderId::VolcDoubao)?
+        .or(credentials.get(AsrProviderId::VolcArk)?)
         .ok_or(TtsError::MissingCredential)?;
 
     let app_id = request.app_id.clone().unwrap_or_default();

@@ -15,9 +15,15 @@ struct PlaybackServer {
 }
 
 #[derive(Clone)]
-enum PlaybackSource {
+enum PlaybackSourceType {
     File(PathBuf),
     Directory(PathBuf),
+}
+
+#[derive(Clone)]
+struct PlaybackSource {
+    source: PlaybackSourceType,
+    last_accessed: std::time::Instant,
 }
 
 pub fn register_playback_file(path: &Path) -> Result<String, String> {
@@ -30,11 +36,25 @@ pub fn register_playback_file(path: &Path) -> Result<String, String> {
         .as_ref()
         .map_err(Clone::clone)?;
     let token = Uuid::new_v4().simple().to_string();
-    server
+    
+    let mut sources = server
         .sources
         .lock()
-        .map_err(|_| "播放器媒体服务状态异常。".to_string())?
-        .insert(token.clone(), PlaybackSource::File(path.to_path_buf()));
+        .map_err(|_| "播放器媒体服务状态异常。".to_string())?;
+
+    // TTL clean up: remove items older than 30 minutes (1800 seconds)
+    let now = std::time::Instant::now();
+    sources.retain(|_, src| {
+        now.duration_since(src.last_accessed) < std::time::Duration::from_secs(1800)
+    });
+
+    sources.insert(
+        token.clone(),
+        PlaybackSource {
+            source: PlaybackSourceType::File(path.to_path_buf()),
+            last_accessed: now,
+        },
+    );
 
     Ok(format!("http://127.0.0.1:{}/media/{token}", server.port))
 }
@@ -49,11 +69,25 @@ pub fn register_playback_directory(path: &Path, entrypoint: &str) -> Result<Stri
         .as_ref()
         .map_err(Clone::clone)?;
     let token = Uuid::new_v4().simple().to_string();
-    server
+    
+    let mut sources = server
         .sources
         .lock()
-        .map_err(|_| "播放器媒体服务状态异常。".to_string())?
-        .insert(token.clone(), PlaybackSource::Directory(path.to_path_buf()));
+        .map_err(|_| "播放器媒体服务状态异常。".to_string())?;
+
+    // TTL clean up: remove items older than 30 minutes (1800 seconds)
+    let now = std::time::Instant::now();
+    sources.retain(|_, src| {
+        now.duration_since(src.last_accessed) < std::time::Duration::from_secs(1800)
+    });
+
+    sources.insert(
+        token.clone(),
+        PlaybackSource {
+            source: PlaybackSourceType::Directory(path.to_path_buf()),
+            last_accessed: now,
+        },
+    );
 
     Ok(format!(
         "http://127.0.0.1:{}/media/{token}/{entrypoint}",
@@ -147,17 +181,23 @@ fn handle_request(
     }
     let relative_path = media_parts.collect::<Vec<_>>().join("/");
 
-    let source = sources
-        .lock()
-        .map_err(|_| "播放器媒体服务状态异常。".to_string())?
-        .get(token)
-        .cloned();
+    let source = {
+        let mut lock = sources
+            .lock()
+            .map_err(|_| "播放器媒体服务状态异常。".to_string())?;
+        if let Some(src) = lock.get_mut(token) {
+            src.last_accessed = std::time::Instant::now();
+            Some(src.source.clone())
+        } else {
+            None
+        }
+    };
     let Some(source) = source else {
         return write_error_response(&mut stream, "404 Not Found");
     };
     let path = match source {
-        PlaybackSource::File(path) if relative_path.is_empty() => path,
-        PlaybackSource::Directory(path) if is_safe_relative_path(Path::new(&relative_path)) => {
+        PlaybackSourceType::File(path) if relative_path.is_empty() => path,
+        PlaybackSourceType::Directory(path) if is_safe_relative_path(Path::new(&relative_path)) => {
             path.join(relative_path)
         }
         _ => return write_error_response(&mut stream, "404 Not Found"),
