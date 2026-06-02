@@ -14,6 +14,7 @@ import {
   Plus,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
+import { useI18n } from "../i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -44,6 +45,8 @@ export function Player() {
     deletePlaybackHistoryItem,
     clearPlaybackHistory,
   } = useIntervox();
+
+  const { t, language } = useI18n();
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
@@ -173,7 +176,7 @@ export function Player() {
       if (!isMounted || event.payload.input_path !== activeMediaInput) return;
       setPlaybackPreviewProgress(event.payload);
       if (event.payload.stage === "failed") {
-        setPlayerError(event.payload.message || "播放器后台预览转换失败。");
+        setPlayerError(event.payload.message || t("Failed to convert media for playback."));
         setIsPreparingPlayback(false);
       }
     }).then((listener) => {
@@ -205,7 +208,7 @@ export function Player() {
     if (mediaInputMode === "public_url") {
       if (!isTauri && isAbsoluteFilesystemPath(activeMediaInput)) {
         setMediaSrc("");
-        setPlayerError("浏览器预览无法直接读取本机绝对路径。请点击 OPEN FILE 重新选择文件，或使用桌面应用。");
+        setPlayerError(t("Browser preview cannot access local paths. Please click OPEN FILE or use the desktop app."));
         setIsPreparingPlayback(false);
         setPlaybackPreviewProgress(null);
         return;
@@ -232,12 +235,12 @@ export function Player() {
             setPlayerError(null);
           } else {
             setMediaSrc("");
-            setPlayerError("请选择有效的本地视频文件。");
+            setPlayerError(t("Please select a valid local video file."));
           }
         } catch (e: any) {
           console.error("Failed to prepare file for playback:", e);
           if (isCurrent) {
-            setPlayerError(e.toString() || "无法转换该媒体以供播放。");
+            setPlayerError(e.toString() || t("Failed to convert media for playback."));
             setMediaSrc("");
           }
         } finally {
@@ -252,7 +255,7 @@ export function Player() {
           setPlayerError(null);
         } else {
           setMediaSrc("");
-          setPlayerError("浏览器预览无法直接读取本机绝对路径。请点击 OPEN FILE 重新选择文件，或使用桌面应用。");
+          setPlayerError(t("Browser preview cannot access local paths. Please click OPEN FILE or use the desktop app."));
         }
         setIsPreparingPlayback(false);
         setPlaybackPreviewProgress(null);
@@ -388,20 +391,20 @@ export function Player() {
   const handleVideoError = () => {
     if (!videoRef.current) return;
     const err = videoRef.current.error;
-    let message = "视频播放失败。";
+    let message = t("Video playback failed.");
     if (err) {
       switch (err.code) {
         case err.MEDIA_ERR_ABORTED:
-          message = "播放被中止。";
+          message = t("Playback aborted.");
           break;
         case err.MEDIA_ERR_NETWORK:
-          message = "网络加载错误，请检查链接是否有效。";
+          message = t("Network loading error, please check if the link is valid.");
           break;
         case err.MEDIA_ERR_DECODE:
-          message = "解码错误。可能是该格式或编码在浏览器内核中不被支持（如部分 MKV/H.265 编码视频）。";
+          message = t("Decoding error. Format/codec might be unsupported by the browser (e.g. MKV/H.265).");
           break;
         case err.MEDIA_ERR_SRC_NOT_SUPPORTED:
-          message = "不支持的视频格式或路径。";
+          message = t("Unsupported video format or path.");
           break;
       }
     }
@@ -443,7 +446,7 @@ export function Player() {
         }
       } catch (e: any) {
         console.error("Failed to select or prepare file:", e);
-        setPlayerError(e.toString() || "选择文件失败");
+        setPlayerError(e.toString() || t("Select file failed"));
       }
     } else {
       fileInputRef.current?.click();
@@ -533,7 +536,7 @@ export function Player() {
   const formatHistoryTime = (isoString: string) => {
     try {
       const date = new Date(isoString);
-      return date.toLocaleString("zh-CN", {
+      return date.toLocaleString(language === "zh" ? "zh-CN" : "en-US", {
         month: "2-digit",
         day: "2-digit",
         hour: "2-digit",
@@ -541,7 +544,7 @@ export function Player() {
         second: "2-digit",
       });
     } catch {
-      return "未知时间";
+      return t("Unknown time");
     }
   };
 
@@ -561,13 +564,13 @@ export function Player() {
         <div className="flex-1 min-w-[280px] flex items-center gap-2 border th-border bg-black/40 px-3 py-1.5 relative">
           <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
           <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider select-none shrink-0 border-r th-border pr-2 mr-1">
-            STREAM_PLAY
+            {t("STREAM_PLAY")}
           </span>
           <input
             type="text"
             value={mediaUrl}
             onChange={(e) => setMediaUrl(e.target.value)}
-            placeholder="Paste video stream URL (mp4, webm, mp3...)"
+            placeholder={t("Paste video stream URL (mp4, webm, mp3...)")}
             className="flex-1 bg-transparent border-none text-glow text-cyan-400 placeholder-slate-700 focus:outline-none text-[12px] pr-2"
           />
         </div>
@@ -581,17 +584,17 @@ export function Player() {
               : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
           }`}
         >
-          <Play className="w-3.5 h-3.5 fill-current" /> PLAY
+          <Play className="w-3.5 h-3.5 fill-current" /> {t("PLAY")}
         </button>
 
         {/* Open File Button */}
         <button
           onClick={handleOpenFileClick}
           className="px-3 py-2 border th-border text-cyan-400 hover:bg-cyan-500/10 transition-all rounded-sm flex items-center gap-1.5 font-bold text-xs shrink-0"
-          title="选择并播放本地视频文件"
+          title={t("Select a local video file to play")}
         >
           <FolderOpen className="w-4 h-4" />
-          <span className="hidden sm:inline">OPEN FILE</span>
+          <span className="hidden sm:inline">{t("OPEN FILE")}</span>
         </button>
 
         {/* Toggle History Button */}
@@ -602,7 +605,7 @@ export function Player() {
               ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/40 border-glow"
               : "border-slate-800 text-slate-400 hover:border-slate-700 hover:bg-slate-800/40"
           }`}
-          title={showHistoryPanel ? "隐藏播放历史" : "显示播放历史"}
+          title={showHistoryPanel ? t("Hide playback history") : t("Show playback history")}
         >
           <History className="w-4 h-4" />
         </button>
@@ -661,10 +664,10 @@ export function Player() {
                   <FolderOpen className="w-6 h-6" />
                 </div>
                 <span className="font-extrabold text-xs th-text uppercase tracking-widest z-10 text-glow">
-                  DRAG VIDEO FILE HERE
+                  {t("DRAG VIDEO FILE HERE")}
                 </span>
                 <span className="text-[10px] th-text-muted z-10">
-                  Or click anywhere to choose a file from your device
+                  {t("Or click anywhere to choose a file from your device")}
                 </span>
               </div>
             )}
@@ -674,7 +677,7 @@ export function Player() {
               <div className="absolute inset-0 bg-cyan-950/70 backdrop-blur-sm z-30 flex flex-col items-center justify-center space-y-2 pointer-events-none border-2 border-dashed border-cyan-400 m-2">
                 <Plus className="w-8 h-8 text-cyan-400 animate-bounce" />
                 <span className="font-extrabold text-sm text-cyan-300 tracking-widest text-glow uppercase">
-                  Drop video file to play
+                  {t("Drop video file to play")}
                 </span>
               </div>
             )}
@@ -683,12 +686,12 @@ export function Player() {
               <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center space-y-3 m-2 border border-cyan-500/30">
                 <span className="w-3 h-3 rounded-full bg-cyan-400 animate-ping" />
                 <span className="text-cyan-300 font-bold uppercase tracking-widest text-xs">
-                  Preparing Compatible Preview
+                  {t("Preparing Compatible Preview")}
                 </span>
                 <p className="text-xs text-cyan-100/80 max-w-[440px] leading-relaxed">
                   {playbackPreviewProgress?.stage === "retrying"
-                    ? "硬件编码器暂不可用，正在切换兼容模式生成首个播放片段。"
-                    : "正在生成首个兼容播放片段。AV1 或 H.265 视频会边转边播，无需等待整部视频处理完成。"}
+                    ? t("Hardware encoder is unavailable, switching to compatibility mode to generate the first preview segment.")
+                    : t("Generating first compatible playback segment. AV1 or H.265 videos will transcode on-the-fly, no need to wait for the entire process.")}
                 </p>
                 {playbackPreviewProgress && playbackPreviewProgress.total_ms > 0 && (
                   <div className="w-full max-w-[440px] space-y-1.5">
@@ -715,7 +718,7 @@ export function Player() {
             {playerError && (
               <div className="absolute inset-0 bg-red-950/80 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center space-y-3 m-2 border border-red-500/30">
                 <span className="text-red-400 font-bold uppercase tracking-widest text-xs">
-                  Playback Alert
+                  {t("Playback Alert")}
                 </span>
                 <p className="text-xs text-red-200 max-w-[400px] leading-relaxed">
                   {playerError}
@@ -724,7 +727,7 @@ export function Player() {
                   onClick={handleOpenFileClick}
                   className="px-4 py-1.5 bg-red-500/15 border border-red-500/30 text-red-200 text-[11px] font-bold tracking-wider hover:bg-red-500 hover:text-black transition-all"
                 >
-                  CHOOSE OTHER FILE
+                  {t("CHOOSE OTHER FILE")}
                 </button>
               </div>
             )}
@@ -733,7 +736,7 @@ export function Player() {
             {mediaSrc && (
               <div className="absolute top-0 left-0 right-0 p-3 bg-gradient-to-b from-black/85 to-transparent flex justify-between items-center z-20 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
                 <span className="text-[10px] text-cyan-400 font-bold tracking-widest uppercase">
-                  {mediaInputMode === "local_file" ? "LOCAL_PLAYBACK" : "LIVE_STREAM_DUB"}
+                  {mediaInputMode === "local_file" ? t("LOCAL_PLAYBACK") : t("LIVE_STREAM_DUB")}
                 </span>
                 <span className="text-[10px] th-text-muted">DECIMALS // SYNC_ACTIVE</span>
               </div>
@@ -806,7 +809,7 @@ export function Player() {
                   <button
                     onClick={cyclePlaybackRate}
                     className="hover:text-cyan-400 font-extrabold text-[10px] transition-colors min-w-[34px] text-center border border-slate-700/60 rounded px-1.5 py-0.5 bg-black/30 hover:border-cyan-500/30"
-                    title="循环切换播放速度 (1.0x / 1.5x / 2.0x)"
+                    title={t("Playback rate (1.0x / 1.5x / 2.0x)")}
                   >
                     {playbackRate.toFixed(1)}x
                   </button>
@@ -814,7 +817,7 @@ export function Player() {
                   <button
                     onClick={toggleFullscreen}
                     className="hover:text-cyan-400 transition-colors"
-                    title={isPlayerExpanded ? "退出全屏" : "全屏播放"}
+                    title={isPlayerExpanded ? t("Exit Fullscreen") : t("Fullscreen")}
                   >
                     {isPlayerExpanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                   </button>
@@ -829,14 +832,14 @@ export function Player() {
           <div className="border th-border th-bg-card p-4 rounded-sm flex flex-col h-[400px] lg:h-[500px]">
             <div className="border-b th-border pb-2 flex justify-between items-center mb-3">
               <span className="font-extrabold th-text tracking-wide text-xs uppercase text-glow text-cyan-400">
-                PLAYBACK HISTORY // 播放历史记录
+                {t("PLAYBACK HISTORY")}
               </span>
               {playbackHistory.length > 0 && (
                 <button
                   onClick={clearPlaybackHistory}
                   className="text-[10px] text-red-400 hover:text-red-300 font-bold uppercase tracking-wider transition-colors"
                 >
-                  Clear All
+                  {t("Clear All")}
                 </button>
               )}
             </div>
@@ -898,7 +901,7 @@ export function Player() {
                           deletePlaybackHistoryItem(item.id);
                         }}
                         className="p-1 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ml-2 shrink-0"
-                        title="删除该记录"
+                        title={t("Delete this record")}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -909,10 +912,10 @@ export function Player() {
                 <div className="h-full flex flex-col items-center justify-center text-center text-slate-600 space-y-2 py-8">
                   <FolderOpen className="w-8 h-8 opacity-40 text-slate-500" />
                   <span className="text-[11px] font-bold uppercase tracking-wider block">
-                    暂无播放记录
+                    {t("No playback records")}
                   </span>
                   <span className="text-[9px] text-slate-700">
-                    打开本地文件或粘贴 URL 播放视频后，历史记录将自动显示在此处。
+                    {t("Playback history will automatically appear here after opening a local file or pasting a URL.")}
                   </span>
                 </div>
               )}

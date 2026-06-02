@@ -1,0 +1,343 @@
+import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+
+type Language = "en" | "zh";
+
+const translations = {
+  en: {
+    // 侧边栏及常规
+    "Player": "Player",
+    "Translate": "Translate",
+    "Tasks": "Tasks",
+    "Settings": "Settings",
+    
+    // Player
+    "STREAM_PLAY": "STREAM_PLAY",
+    "PLAY": "PLAY",
+    "OPEN FILE": "OPEN FILE",
+    "PLAYBACK HISTORY": "PLAYBACK HISTORY",
+    "Clear All": "Clear All",
+    "Paste video stream URL (mp4, webm, mp3...)": "Paste video stream URL (mp4, webm, mp3...)",
+    "DRAG VIDEO FILE HERE": "DRAG VIDEO FILE HERE",
+    "Or click anywhere to choose a file from your device": "Or click anywhere to choose a file from your device",
+    "Drop video file to play": "Drop video file to play",
+    "Preparing Compatible Preview": "Preparing Compatible Preview",
+    "Hardware encoder is unavailable, switching to compatibility mode to generate the first preview segment.": "Hardware encoder is unavailable, switching to compatibility mode to generate the first preview segment.",
+    "Generating first compatible playback segment. AV1 or H.265 videos will transcode on-the-fly, no need to wait for the entire process.": "Generating first compatible playback segment. AV1 or H.265 videos will transcode on-the-fly, no need to wait for the entire process.",
+    "Playback Alert": "Playback Alert",
+    "CHOOSE OTHER FILE": "CHOOSE OTHER FILE",
+    "LOCAL_PLAYBACK": "LOCAL_PLAYBACK",
+    "LIVE_STREAM_DUB": "LIVE_STREAM_DUB",
+    "No playback records": "No playback records",
+    "Playback history will automatically appear here after opening a local file or pasting a URL.": "Playback history will automatically appear here after opening a local file or pasting a URL.",
+    "Delete this record": "Delete this record",
+    "Hide playback history": "Hide playback history",
+    "Show playback history": "Show playback history",
+    "Select a local video file to play": "Select a local video file to play",
+    "Playback rate (1.0x / 1.5x / 2.0x)": "Playback rate (1.0x / 1.5x / 2.0x)",
+    "Exit Fullscreen": "Exit Fullscreen",
+    "Fullscreen": "Fullscreen",
+    "Browser preview cannot access local paths. Please click OPEN FILE or use the desktop app.": "Browser preview cannot access local paths. Please click OPEN FILE or use the desktop app.",
+    "Please select a valid local video file.": "Please select a valid local video file.",
+    "Failed to convert media for playback.": "Failed to convert media for playback.",
+    "Select file failed": "Select file failed",
+    "Video playback failed.": "Video playback failed.",
+    "Playback aborted.": "Playback aborted.",
+    "Network loading error, please check if the link is valid.": "Network loading error, please check if the link is valid.",
+    "Decoding error. Format/codec might be unsupported by the browser (e.g. MKV/H.265).": "Decoding error. Format/codec might be unsupported by the browser (e.g. MKV/H.265).",
+    "Unsupported video format or path.": "Unsupported video format or path.",
+    "Unknown time": "Unknown time",
+    "Browser preview cannot open directory picker. Please enter path manually or use desktop app.": "Browser preview cannot open directory picker. Please enter path manually or use desktop app.",
+    "Cannot open directory picker, please enter output path manually.": "Cannot open directory picker, please enter output path manually.",
+
+    // Translate
+    "Configuration Studio": "Configuration Studio",
+    "Define processing pipelines & synthesis variables": "Define processing pipelines & synthesis variables",
+    "START PROCESS": "START PROCESS",
+    "SOURCE_MEDIA": "SOURCE_MEDIA",
+    "Local File": "Local File",
+    "Public URL": "Public URL",
+    "Local File Selection": "Local File Selection",
+    "Drag and drop or click to choose from system files": "Drag and drop or click to choose from system files",
+    "Target File Path": "Target File Path",
+    "Network Stream Link": "Network Stream Link",
+    "ENGINE": "ENGINE",
+    "ASR & LLM Engine Provider": "ASR & LLM Engine Provider",
+    "Translation Model": "Translation Model",
+    "ASR Recognition Model": "ASR Recognition Model",
+    "Whisper Model Size": "Whisper Model Size",
+    "Google Cloud Project ID": "Google Cloud Project ID",
+    "Target Language": "Target Language",
+    "AUDIO_MIX": "AUDIO_MIX",
+    "Original Audio Retention": "Original Audio Retention",
+    "Mute Original Audio Entirely": "Mute Original Audio Entirely",
+    "SUBTITLES": "SUBTITLES",
+    "Source Subtitles": "Source Subtitles",
+    "Use original subtitles detected by ASR.": "Use original subtitles detected by ASR.",
+    "Target Subtitles: {lang}": "Target Subtitles: {lang}",
+    "Use translated target language subtitles.": "Use translated target language subtitles.",
+    "Bilingual subtitles enabled. Source on top, target at the bottom.": "Bilingual subtitles enabled. Source on top, target at the bottom.",
+    "Monolingual subtitles enabled. Subtitles will be burned into the final video.": "Monolingual subtitles enabled. Subtitles will be burned into the final video.",
+    "Subtitles disabled. Final video will only mix audio tracks.": "Subtitles disabled. Final video will only mix audio tracks.",
+    "SYNTHESIS": "SYNTHESIS",
+    "Default Voice Model": "Default Voice Model",
+    "Voice Cloning": "Voice Cloning",
+    "Select Preset Voice Timbre": "Select Preset Voice Timbre",
+    "Standard preset voice models (Seed-TTS / Sambert).": "Standard preset voice models (Seed-TTS / Sambert).",
+    "Clone original speaker's timbre, emotional tone, and ambient noise levels dynamically.": "Clone original speaker's timbre, emotional tone, and ambient noise levels dynamically.",
+
+    // Tasks
+    "Operation Queue": "Operation Queue",
+    "SYSTEM STATUS": "SYSTEM STATUS",
+    "THREADS": "THREADS",
+    "OPTIMAL": "OPTIMAL",
+    "Clear Finished": "Clear Finished",
+    "ACTIVE TASK": "ACTIVE TASK",
+    "RUN": "RUN",
+    "DEL": "DEL",
+    "CANCEL": "CANCEL",
+    "FFMPEG WORKING": "FFMPEG WORKING",
+    "PROCESSING": "PROCESSING",
+    "WAITING": "WAITING",
+    "NO ACTIVE Dubbing tasks": "NO ACTIVE Dubbing tasks",
+    "Go to Player or Translate configuration tab to initiate a new dubbing pipeline.": "Go to Player or Translate configuration tab to initiate a new dubbing pipeline.",
+    "QUEUED OPERATIONS": "QUEUED OPERATIONS",
+    "RECENT LOGS": "RECENT LOGS",
+    "Queue is empty. No tasks pending.": "Queue is empty. No tasks pending.",
+    "No recent operations recorded in this session.": "No recent operations recorded in this session.",
+    "Open video with default player": "Open video with default player",
+    "Reveal in Finder": "Reveal in Finder",
+    "Retry exporting pipeline": "Retry exporting pipeline",
+    "Delete record": "Delete record",
+    "Select Video": "Select Video",
+    "Extract Audio": "Extract Audio",
+    "ASR (Aliyun)": "ASR (Aliyun)",
+    "TTS/Clone": "TTS/Clone",
+    "Mix Media": "Mix Media",
+    "Final Output": "Final Output",
+
+    // Settings
+    "Configuration": "Configuration",
+    "DEFINE CORE OPERATIONAL PARAMETERS": "DEFINE CORE OPERATIONAL PARAMETERS",
+    "RESET": "RESET",
+    "APPLY CHANGES": "APPLY CHANGES",
+    "OUTPUT ROUTING": "OUTPUT ROUTING",
+    "BASE_DIRECTORY_PATH": "BASE_DIRECTORY_PATH",
+    "BROWSE": "BROWSE",
+    "Temporary ASR audio, voice-clone slices, and playback previews are retained under this directory.": "Temporary ASR audio, voice-clone slices, and playback previews are retained under this directory.",
+    "PROCESSING DEFAULTS": "PROCESSING DEFAULTS",
+    "AUTO_DETECT_LANG": "AUTO_DETECT_LANG",
+    "DEFAULT_TARGET_LANG": "DEFAULT_TARGET_LANG",
+    "ENABLE_VOICE_CLONE": "ENABLE_VOICE_CLONE",
+    "LLM & INFERENCE ENDPOINTS": "LLM & INFERENCE ENDPOINTS",
+    "NODE.SECURE": "NODE.SECURE",
+    "ALIBABA_BAILIAN_API": "ALIBABA_BAILIAN_API",
+    "AUTHORIZATION_BEARER": "AUTHORIZATION_BEARER",
+    "Save Bearer": "Save Bearer",
+    "Validate Endpoint": "Validate Endpoint",
+    "VOLCENGINE_SPEECH_API": "VOLCENGINE_SPEECH_API",
+    "APP_ID": "APP_ID",
+    "RESOURCE_ID": "RESOURCE_ID",
+    "Required for deep semantic context translation, ASR processing, and zero-shot voice cloning synthetic pipelines.": "Required for deep semantic context translation, ASR processing, and zero-shot voice cloning synthetic pipelines.",
+    "Used for Doubao ASR, Volcengine MT, and SEED-TTS synthesis. MT requires activation first.": "Used for Doubao ASR, Volcengine MT, and SEED-TTS synthesis. MT requires activation first.",
+    "Configuration saved successfully!": "Configuration saved successfully!",
+    "Are you sure you want to reset all settings to defaults?": "Are you sure you want to reset all settings to defaults?",
+    "UI_LANGUAGE": "UI_LANGUAGE",
+    "Select application interface language.": "Select application interface language.",
+    "Active": "Active",
+    "Missing Key": "Missing Key",
+    "Saved": "Saved",
+  },
+  zh: {
+    // 侧边栏及常规
+    "Player": "播放器 Player",
+    "Translate": "翻译配置 Translate",
+    "Tasks": "任务状态 Tasks",
+    "Settings": "参数设置 Settings",
+    
+    // Player
+    "STREAM_PLAY": "在线流播放 STREAM_PLAY",
+    "PLAY": "播放 PLAY",
+    "OPEN FILE": "打开文件 OPEN FILE",
+    "PLAYBACK HISTORY": "播放历史记录 PLAYBACK HISTORY",
+    "Clear All": "清除全部 Clear All",
+    "Paste video stream URL (mp4, webm, mp3...)": "粘贴视频流地址 (mp4, webm, mp3...)",
+    "DRAG VIDEO FILE HERE": "拖拽视频文件到此处 DRAG VIDEO FILE HERE",
+    "Or click anywhere to choose a file from your device": "或者点击任意区域从您的设备中选择文件",
+    "Drop video file to play": "释放视频文件以播放",
+    "Preparing Compatible Preview": "正在准备兼容预览片段 Preparing Compatible Preview",
+    "Hardware encoder is unavailable, switching to compatibility mode to generate the first preview segment.": "硬件编码器暂不可用，正在切换兼容模式生成首个播放片段。",
+    "Generating first compatible playback segment. AV1 or H.265 videos will transcode on-the-fly, no need to wait for the entire process.": "正在生成首个兼容播放片段。AV1 或 H.265 视频会边转边播，无需等待整部视频处理完成。",
+    "Playback Alert": "播放警报 Playback Alert",
+    "CHOOSE OTHER FILE": "选择其他文件 CHOOSE OTHER FILE",
+    "LOCAL_PLAYBACK": "本地播放 LOCAL_PLAYBACK",
+    "LIVE_STREAM_DUB": "在线流/配音播放 LIVE_STREAM_DUB",
+    "No playback records": "暂无播放记录",
+    "Playback history will automatically appear here after opening a local file or pasting a URL.": "打开本地文件或粘贴 URL 播放视频后，历史记录将自动显示在此处。",
+    "Delete this record": "删除该记录",
+    "Hide playback history": "隐藏播放历史",
+    "Show playback history": "显示播放历史",
+    "Select a local video file to play": "选择本地视频文件进行播放",
+    "Playback rate (1.0x / 1.5x / 2.0x)": "循环切换播放速度 (1.0x / 1.5x / 2.0x)",
+    "Exit Fullscreen": "退出全屏",
+    "Fullscreen": "全屏播放",
+    "Browser preview cannot access local paths. Please click OPEN FILE or use the desktop app.": "浏览器预览无法直接读取本机绝对路径。请点击 OPEN FILE 重新选择文件，或使用桌面应用。",
+    "Please select a valid local video file.": "请选择有效的本地视频文件。",
+    "Failed to convert media for playback.": "无法转换该媒体以供播放。",
+    "Select file failed": "选择文件失败",
+    "Video playback failed.": "视频播放失败。",
+    "Playback aborted.": "播放被中止。",
+    "Network loading error, please check if the link is valid.": "网络加载错误，请检查链接是否有效。",
+    "Decoding error. Format/codec might be unsupported by the browser (e.g. MKV/H.265).": "解码错误。可能是该格式或编码在浏览器内核中不被支持（如部分 MKV/H.265 编码视频）。",
+    "Unsupported video format or path.": "不支持的视频格式或路径。",
+    "Unknown time": "未知时间",
+    "Browser preview cannot open directory picker. Please enter path manually or use desktop app.": "浏览器预览无法打开系统目录选择器，请手动填写路径或使用桌面应用。",
+    "Cannot open directory picker, please enter output path manually.": "无法打开系统目录选择器，请手动填写输出路径。",
+
+    // Translate
+    "Configuration Studio": "配置中心 Configuration Studio",
+    "Define processing pipelines & synthesis variables": "定义处理流程与合成参数",
+    "START PROCESS": "开始处理 START PROCESS",
+    "SOURCE_MEDIA": "源媒体资源 SOURCE_MEDIA",
+    "Local File": "本地文件 Local File",
+    "Public URL": "在线视频流 Public URL",
+    "Local File Selection": "本地文件选择",
+    "Drag and drop or click to choose from system files": "拖放或点击以从系统文件中进行选择",
+    "Target File Path": "目标文件路径",
+    "Network Stream Link": "在线视频流链接",
+    "ENGINE": "推理引擎 ENGINE",
+    "ASR & LLM Engine Provider": "语音识别与大模型提供商",
+    "Translation Model": "翻译模型",
+    "ASR Recognition Model": "ASR 识别模型",
+    "Whisper Model Size": "Whisper 模型大小",
+    "Google Cloud Project ID": "Google Cloud 项目 ID",
+    "Target Language": "目标翻译语言",
+    "AUDIO_MIX": "音频混音配置 AUDIO_MIX",
+    "Original Audio Retention": "原音保留比例",
+    "Mute Original Audio Entirely": "完全静音原声",
+    "SUBTITLES": "字幕烧录配置 SUBTITLES",
+    "Source Subtitles": "源语言字幕",
+    "Use original subtitles detected by ASR.": "使用 ASR 识别出的原文原字幕。",
+    "Target Subtitles: {lang}": "目标语言字幕：{lang}",
+    "Use translated target language subtitles.": "使用翻译后的目标语言字幕。",
+    "Bilingual subtitles enabled. Source on top, target at the bottom.": "双语字幕已启用：原文显示在上方，目标语言显示在下方，避免重叠。",
+    "Monolingual subtitles enabled. Subtitles will be burned into the final video.": "单语字幕已启用：字幕将嵌入到最终导出的视频中。",
+    "Subtitles disabled. Final video will only mix audio tracks.": "未启用字幕：最终视频仅混合语音轨道，不烧录字幕。",
+    "SYNTHESIS": "配音与合成 SYNTHESIS",
+    "Default Voice Model": "默认预置音色",
+    "Voice Cloning": "零样本声音克隆 Voice Cloning",
+    "Select Preset Voice Timbre": "选择预置音色",
+    "Standard preset voice models (Seed-TTS / Sambert).": "标准声音库。从预先训练好的专业模型中选择音色。",
+    "Clone original speaker's timbre, emotional tone, and ambient noise levels dynamically.": "利用零样本克隆技术，提取并复制原视频说话人的音色、情感语调和声学特征。",
+
+    // Tasks
+    "Operation Queue": "任务处理队列 Operation Queue",
+    "SYSTEM STATUS": "系统状态 SYSTEM STATUS",
+    "THREADS": "活动线程数 THREADS",
+    "OPTIMAL": "最佳 OPTIMAL",
+    "Clear Finished": "清空已完成 Clear Finished",
+    "ACTIVE TASK": "活动任务 ACTIVE TASK",
+    "RUN": "开始运行 RUN",
+    "DEL": "删除 DEL",
+    "CANCEL": "取消运行 CANCEL",
+    "FFMPEG WORKING": "FFmpeg 视频混音合成中 FFMPEG WORKING",
+    "PROCESSING": "处理中 PROCESSING",
+    "WAITING": "等待中 WAITING",
+    "NO ACTIVE Dubbing tasks": "当前无正在运行的配音合成任务 NO ACTIVE Dubbing tasks",
+    "Go to Player or Translate configuration tab to initiate a new dubbing pipeline.": "请前往播放器或翻译配置页面发起新的 Dubbing 工作流。",
+    "QUEUED OPERATIONS": "排队等待中的任务 QUEUED OPERATIONS",
+    "RECENT LOGS": "最近运行日志与历史 RECENT LOGS",
+    "Queue is empty. No tasks pending.": "队列为空。暂无排队中的任务。",
+    "No recent operations recorded in this session.": "本次会话中暂无处理记录。",
+    "Open video with default player": "用系统默认播放器打开视频",
+    "Reveal in Finder": "在 Finder 中定位文件",
+    "Retry exporting pipeline": "重新开始导出 pipeline",
+    "Delete record": "删除此记录",
+    "Select Video": "选择视频 Select Video",
+    "Extract Audio": "提取音频 Extract Audio",
+    "ASR (Aliyun)": "语音识别 ASR",
+    "TTS/Clone": "语音合成/声音克隆 TTS/Clone",
+    "Mix Media": "音视频混音合成 Mix Media",
+    "Final Output": "输出完成 Final Output",
+
+    // Settings
+    "Configuration": "全局参数设置 Configuration",
+    "DEFINE CORE OPERATIONAL PARAMETERS": "定义应用基础运行和接口凭证参数",
+    "RESET": "重置参数 RESET",
+    "APPLY CHANGES": "应用更改 APPLY CHANGES",
+    "OUTPUT ROUTING": "输出文件路由配置 OUTPUT ROUTING",
+    "BASE_DIRECTORY_PATH": "输出存放根目录 BASE_DIRECTORY_PATH",
+    "BROWSE": "浏览 BROWSE",
+    "Temporary ASR audio, voice-clone slices, and playback previews are retained under this directory.": "临时的 ASR 音频切片、声音克隆训练数据以及播放预览片段将被自动保存在此文件夹中。",
+    "PROCESSING DEFAULTS": "默认运行偏好 PROCESSING DEFAULTS",
+    "AUTO_DETECT_LANG": "自动识别源语言 AUTO_DETECT_LANG",
+    "DEFAULT_TARGET_LANG": "默认目标语言 DEFAULT_TARGET_LANG",
+    "ENABLE_VOICE_CLONE": "启用声音克隆 ENABLE_VOICE_CLONE",
+    "LLM & INFERENCE ENDPOINTS": "大模型与语音推理节点凭证 LLM & INFERENCE ENDPOINTS",
+    "NODE.SECURE": "节点安全认证 NODE.SECURE",
+    "ALIBABA_BAILIAN_API": "阿里百炼 API 凭证 ALIBABA_BAILIAN_API",
+    "AUTHORIZATION_BEARER": "鉴权令牌 AUTHORIZATION_BEARER",
+    "Save Bearer": "保存密钥 Save Bearer",
+    "Validate Endpoint": "验证连接 Validate Endpoint",
+    "VOLCENGINE_SPEECH_API": "火山引擎语音 API 凭证 (豆包语音)",
+    "APP_ID": "应用标识 APP_ID",
+    "RESOURCE_ID": "资源标识 RESOURCE_ID (可选)",
+    "Required for deep semantic context translation, ASR processing, and zero-shot voice cloning synthetic pipelines.": "用于阿里百炼 ASR、通义千问翻译以及 zero-shot 零样本语音克隆和 CosyVoice 合成。",
+    "Used for Doubao ASR, Volcengine MT, and SEED-TTS synthesis. MT requires activation first.": "用于豆包极速语音 ASR、火山机器翻译和 SEED-TTS 语音合成。使用前请开通 volc.speech.mt 服务。",
+    "Configuration saved successfully!": "配置已成功应用并保存！",
+    "Are you sure you want to reset all settings to defaults?": "是否确定重置所有设置为默认配置？",
+    "UI_LANGUAGE": "界面语言 UI_LANGUAGE",
+    "Select application interface language.": "选择应用程序的界面语言。",
+    "Active": "连接正常 Active",
+    "Missing Key": "未配置密钥 Missing Key",
+    "Saved": "已保存",
+  }
+};
+
+export type TranslationKey = keyof typeof translations.en;
+
+type I18nContextType = {
+  language: Language;
+  setLanguage: (lang: Language) => void;
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+};
+
+const I18nContext = createContext<I18nContextType | undefined>(undefined);
+
+export function I18nProvider({ children }: { children: React.ReactNode }) {
+  const [language, setLanguage] = useState<Language>(() => {
+    // 默认使用中文 "zh"，支持 localStorage 读取
+    const saved = localStorage.getItem("intervox_language");
+    return saved === "en" || saved === "zh" ? saved : "zh";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("intervox_language", language);
+  }, [language]);
+
+  const t = useCallback(
+    (key: TranslationKey, params?: Record<string, string | number>) => {
+      let text = translations[language]?.[key] || translations["en"]?.[key] || key;
+      if (params) {
+        Object.entries(params).forEach(([k, v]) => {
+          text = text.split(`{${k}}`).join(String(v));
+        });
+      }
+      return text;
+    },
+    [language]
+  );
+
+  return (
+    <I18nContext.Provider value={{ language, setLanguage, t }}>
+      {children}
+    </I18nContext.Provider>
+  );
+}
+
+export function useI18n() {
+  const context = useContext(I18nContext);
+  if (!context) {
+    throw new Error("useI18n must be used within an I18nProvider");
+  }
+  return context;
+}

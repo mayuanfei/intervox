@@ -18,9 +18,11 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useIntervox } from "../hooks/useIntervox";
+import { useI18n } from "../i18n";
 
 export function Tasks() {
   const { tasks, activeTaskId, clearCompletedTasks, retryTask, deleteTask, cancelTask } = useIntervox();
+  const { t } = useI18n();
 
   // Find active task
   const activeTask = tasks.find((t) => t.status === "running") || tasks.find((t) => t.status === "queued" && activeTaskId === t.id);
@@ -30,13 +32,13 @@ export function Tasks() {
 
   // Pipeline stage icons and names helper
   const pipelineStages = [
-    { key: "select_video", label: "Select Video", icon: Video },
-    { key: "extract_audio", label: "Extract Audio", icon: Music },
-    { key: "asr", label: "ASR (Aliyun)", icon: Volume2 },
-    { key: "translate", label: "Translate", icon: Languages },
-    { key: "tts_clone", label: "TTS/Clone", icon: Tv },
-    { key: "mix_media", label: "Mix Media", icon: Check },
-    { key: "final_output", label: "Final Output", icon: Download },
+    { key: "select_video", label: t("Select Video"), icon: Video },
+    { key: "extract_audio", label: t("Extract Audio"), icon: Music },
+    { key: "asr", label: t("ASR (Aliyun)"), icon: Volume2 },
+    { key: "translate", label: t("Translate"), icon: Languages },
+    { key: "tts_clone", label: t("TTS/Clone"), icon: Tv },
+    { key: "mix_media", label: t("Mix Media"), icon: Check },
+    { key: "final_output", label: t("Final Output"), icon: Download },
   ];
 
   const getStageIndex = (stageName: string) => {
@@ -68,10 +70,10 @@ export function Tasks() {
       <div className="flex items-center justify-between border-b th-border pb-4">
         <div>
           <h2 className="text-xl font-bold th-text tracking-tight uppercase">
-            Operation Queue
+            {t("Operation Queue")}
           </h2>
           <p className="text-xs th-text-muted mt-1 uppercase tracking-wider">
-            SYSTEM STATUS: <span className="text-emerald-400 font-bold">OPTIMAL</span> // THREADS: 12/16
+            {t("SYSTEM STATUS")}: <span className="text-emerald-400 font-bold">{t("OPTIMAL")}</span> // {t("THREADS")}: 12/16
           </p>
         </div>
         {finishedTasks.length > 0 && (
@@ -79,7 +81,7 @@ export function Tasks() {
             onClick={clearCompletedTasks}
             className="px-3 py-1 border th-border th-text-3 hover:th-text transition-colors uppercase tracking-widest text-[11px]"
           >
-            Clear Finished
+            {t("Clear Finished")}
           </button>
         )}
       </div>
@@ -92,12 +94,12 @@ export function Tasks() {
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${activeTask.status === "queued" ? "bg-amber-400" : "bg-cyan-400 animate-ping"}`}></span>
               <span className="font-extrabold th-text tracking-wide text-xs">
-                ACTIVE TASK: {activeTask.id}
+                {t("ACTIVE TASK")}: {activeTask.id}
               </span>
               <span className="text-[10px] th-text-muted">({activeTask.fileName})</span>
               {activeTask.status === "queued" && (
                 <span className="text-[9px] text-amber-400 border border-amber-500/30 rounded bg-amber-500/10 px-1.5 py-0.5 font-bold uppercase tracking-wider">
-                  IDLE (QUEUED)
+                  {t("WAITING")} (QUEUED)
                 </span>
               )}
             </div>
@@ -107,18 +109,18 @@ export function Tasks() {
                   <button
                     onClick={() => retryTask(activeTask.id)}
                     className="flex items-center gap-1 px-2 py-0.5 border border-cyan-500 text-cyan-400 hover:bg-cyan-500 hover:text-black rounded transition-all text-[11px] font-bold"
-                    title="立即启动该任务"
+                    title={t("RUN")}
                   >
                     <Play className="w-2.5 h-2.5 fill-current" />
-                    RUN
+                    {t("RUN")}
                   </button>
                   <button
                     onClick={() => deleteTask(activeTask.id)}
                     className="flex items-center gap-1 px-2 py-0.5 border border-red-500/30 text-red-400 hover:bg-red-500 hover:text-black rounded transition-all text-[11px] font-bold"
-                    title="删除该任务"
+                    title={t("DEL")}
                   >
                     <Trash2 className="w-2.5 h-2.5" />
-                    DEL
+                    {t("DEL")}
                   </button>
                 </>
               )}
@@ -126,15 +128,15 @@ export function Tasks() {
                 <button
                   onClick={() => cancelTask(activeTask.id)}
                   className="flex items-center gap-1 px-2 py-0.5 border border-red-500 text-red-400 hover:bg-red-500 hover:text-black rounded transition-all text-[11px] font-bold"
-                  title="取消正在执行的任务"
+                  title={t("CANCEL")}
                 >
                   <X className="w-2.5 h-2.5" />
-                  CANCEL
+                  {t("CANCEL")}
                 </button>
               )}
               <div className="text-[11px] th-text-muted">
                 STATE: <span className="text-cyan-400 font-bold">
-                  {activeTask.status === "queued" ? "WAITING" : isExporting ? "FFMPEG WORKING" : "PROCESSING"}
+                  {activeTask.status === "queued" ? t("WAITING") : isExporting ? t("FFMPEG WORKING") : t("PROCESSING")}
                 </span>
               </div>
             </div>
@@ -213,10 +215,10 @@ export function Tasks() {
         <div className="border th-border bg-black/20 p-8 rounded-sm text-center flex flex-col items-center justify-center space-y-2">
           <Terminal className="w-8 h-8 th-text-muted" />
           <span className="font-bold th-text text-xs uppercase tracking-widest">
-            NO ACTIVE Dubbing tasks
+            {t("NO ACTIVE Dubbing tasks")}
           </span>
           <span className="text-[10px] th-text-muted">
-            Go to Player or Translate configuration tab to initiate a new dubbing pipeline.
+            {t("Go to Player or Translate configuration tab to initiate a new dubbing pipeline.")}
           </span>
         </div>
       )}
@@ -227,40 +229,40 @@ export function Tasks() {
         <div className="border th-border th-bg-card p-5 space-y-4 rounded-sm">
           <div className="flex items-center gap-2 border-b th-border pb-2">
             <span className="font-bold th-text uppercase tracking-widest text-xs">
-              QUEUED OPERATIONS
+              {t("QUEUED OPERATIONS")}
             </span>
           </div>
 
           <div className="space-y-3">
             {queuedTasks.length > 0 ? (
-              queuedTasks.map((t) => (
+              queuedTasks.map((task) => (
                 <div
-                  key={t.id}
+                  key={task.id}
                   className="border th-border bg-black/20 p-3.5 flex items-center justify-between rounded-sm"
                 >
                   <div className="space-y-1">
                     <span className="font-bold th-text text-xs truncate max-w-[200px] block">
-                      {t.fileName}
+                      {task.fileName}
                     </span>
                     <span className="text-[10px] th-text-muted block">
-                      ID: {t.id} // Target: {t.targetLang}
+                      ID: {task.id} // Target: {task.targetLang}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <span className="text-[10px] font-bold text-slate-500 uppercase border border-slate-700/50 px-2 py-0.5 rounded bg-slate-800/40">
-                      QUEUED
+                      {t("WAITING")}
                     </span>
                     <button
-                      onClick={() => retryTask(t.id)}
+                      onClick={() => retryTask(task.id)}
                       className="w-7 h-7 rounded border border-cyan-500/30 flex items-center justify-center text-cyan-400 hover:bg-cyan-500 hover:text-black transition-all"
-                      title="开始执行任务"
+                      title={t("RUN")}
                     >
                       <Play className="w-3 h-3 fill-current" />
                     </button>
                     <button
-                      onClick={() => deleteTask(t.id)}
+                      onClick={() => deleteTask(task.id)}
                       className="w-7 h-7 rounded border border-red-500/30 flex items-center justify-center text-red-400 hover:bg-red-500 hover:text-black transition-all"
-                      title="删除任务"
+                      title={t("DEL")}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -269,7 +271,7 @@ export function Tasks() {
               ))
             ) : (
               <div className="text-center py-6 th-text-muted text-[11px]">
-                Queue is empty. No tasks pending.
+                {t("Queue is empty. No tasks pending.")}
               </div>
             )}
           </div>
@@ -279,16 +281,16 @@ export function Tasks() {
         <div className="border th-border th-bg-card p-5 space-y-4 rounded-sm">
           <div className="flex items-center gap-2 border-b th-border pb-2">
             <span className="font-bold th-text uppercase tracking-widest text-xs">
-              RECENT LOGS
+              {t("RECENT LOGS")}
             </span>
           </div>
 
           <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
-            {finishedTasks.map((t) => (
+            {finishedTasks.map((task) => (
               <div
-                key={t.id}
+                key={task.id}
                 className={`border p-3.5 rounded-sm ${
-                  t.status === "completed"
+                  task.status === "completed"
                     ? "border-emerald-500/20 bg-emerald-500/5"
                     : "border-red-500/20 bg-red-500/5"
                 }`}
@@ -297,46 +299,46 @@ export function Tasks() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="space-y-0.5 min-w-0">
                     <span className="font-bold th-text text-xs truncate max-w-[220px] block">
-                      {t.fileName}
+                      {task.fileName}
                     </span>
                     <span className="text-[10px] th-text-muted block">
-                      {t.id} • {t.duration || "N/A"}
+                      {task.id} • {task.duration || "N/A"}
                     </span>
                   </div>
 
                   <div className="flex gap-2 flex-shrink-0">
-                    {t.status === "completed" ? (
+                    {task.status === "completed" ? (
                       <>
                         {/* Open in default player */}
                         <button
-                          onClick={() => handleOpenFile(t.outputVideoPath)}
+                          onClick={() => handleOpenFile(task.outputVideoPath)}
                           className="w-7 h-7 rounded border border-emerald-500/30 flex items-center justify-center text-emerald-400 hover:bg-emerald-500 hover:text-black transition-all"
-                          title="用默认播放器打开视频"
+                          title={t("Open video with default player")}
                         >
                           <Download className="w-3.5 h-3.5" />
                         </button>
                         {/* Reveal in Finder */}
                         <button
-                          onClick={() => handleRevealInFinder(t.outputVideoPath)}
+                          onClick={() => handleRevealInFinder(task.outputVideoPath)}
                           className="w-7 h-7 rounded border border-emerald-500/30 flex items-center justify-center text-emerald-400 hover:bg-emerald-500 hover:text-black transition-all"
-                          title="在 Finder 中显示"
+                          title={t("Reveal in Finder")}
                         >
                           <FolderOpen className="w-3.5 h-3.5" />
                         </button>
                       </>
                     ) : (
                       <button
-                        onClick={() => retryTask(t.id)}
+                        onClick={() => retryTask(task.id)}
                         className="w-7 h-7 rounded border border-red-500/30 flex items-center justify-center text-red-400 hover:bg-red-500 hover:text-black transition-all animate-pulse"
-                        title="重试导出 pipeline"
+                        title={t("Retry exporting pipeline")}
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
                       </button>
                     )}
                     <button
-                      onClick={() => deleteTask(t.id)}
+                      onClick={() => deleteTask(task.id)}
                       className="w-7 h-7 rounded border border-red-500/30 flex items-center justify-center text-red-400 hover:bg-red-500 hover:text-black transition-all"
-                      title="删除记录"
+                      title={t("Delete record")}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -344,12 +346,12 @@ export function Tasks() {
                 </div>
 
                 {/* Error message — shown below, full width, truncated with tooltip */}
-                {t.error && (
+                {task.error && (
                   <p
                     className="text-[10px] text-red-400 font-bold mt-2 leading-relaxed line-clamp-3 break-all"
-                    title={t.error}
+                    title={task.error}
                   >
-                    {t.error}
+                    {task.error}
                   </p>
                 )}
               </div>
@@ -357,7 +359,7 @@ export function Tasks() {
 
             {finishedTasks.length === 0 && (
               <div className="text-center py-6 th-text-muted text-[11px]">
-                No recent operations recorded in this session.
+                {t("No recent operations recorded in this session.")}
               </div>
             )}
           </div>

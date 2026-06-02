@@ -9,6 +9,7 @@ import {
   Captions,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
+import { useI18n } from "../i18n";
 import {
   BAILIAN_MODEL_OPTIONS,
   BAILIAN_TRANSLATION_MODEL_OPTIONS,
@@ -47,6 +48,8 @@ export function Translate() {
     synthesisMode,
     setSynthesisMode,
   } = useIntervox();
+
+  const { t } = useI18n();
 
   const [isDragOver, setIsDragOver] = React.useState(false);
 
@@ -98,10 +101,10 @@ export function Translate() {
       <div className="flex items-center justify-between border-b th-border pb-4">
         <div>
           <h2 className="text-xl font-bold th-text tracking-tight">
-            Configuration Studio
+            {t("Configuration Studio")}
           </h2>
           <p className="text-xs th-text-muted mt-1 uppercase tracking-wider">
-            Define processing pipelines & synthesis variables
+            {t("Define processing pipelines & synthesis variables")}
           </p>
         </div>
         <div>
@@ -114,7 +117,7 @@ export function Translate() {
                 : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
             }`}
           >
-            START PROCESS
+            {t("START PROCESS")}
           </button>
         </div>
       </div>
@@ -127,7 +130,7 @@ export function Translate() {
             <div className="flex items-center gap-2 border-b th-border pb-2">
               <FileVideo className="w-4 h-4 text-cyan-400" />
               <span className="font-bold th-text uppercase tracking-widest text-xs">
-                SOURCE_MEDIA
+                {t("SOURCE_MEDIA")}
               </span>
             </div>
 
@@ -140,7 +143,7 @@ export function Translate() {
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                Local File
+                {t("Local File")}
               </button>
               <button
                 onClick={() => setMediaInputMode("public_url")}
@@ -150,7 +153,7 @@ export function Translate() {
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                Public URL
+                {t("Public URL")}
               </button>
             </div>
 
@@ -169,15 +172,15 @@ export function Translate() {
                     <FileVideo className="w-5 h-5" />
                   </div>
                   <span className="font-bold th-text text-xs uppercase tracking-widest">
-                    Local File Selection
+                    {t("Local File Selection")}
                   </span>
                   <span className="text-[10px] th-text-muted mt-1">
-                    Drag and drop or click to choose from system files
+                    {t("Drag and drop or click to choose from system files")}
                   </span>
                 </div>
                 <div className="space-y-1">
                   <span className="th-text-3 text-[10px] uppercase font-bold">
-                    Target File Path
+                    {t("Target File Path")}
                   </span>
                   <input
                     type="text"
@@ -191,7 +194,7 @@ export function Translate() {
             ) : (
               <div className="space-y-2">
                 <span className="th-text-3 text-[10px] uppercase font-bold">
-                  Network Stream Link
+                  {t("Network Stream Link")}
                 </span>
                 <input
                   type="text"
@@ -211,14 +214,14 @@ export function Translate() {
               <div className="flex items-center gap-2 border-b th-border pb-2">
                 <Cpu className="w-4 h-4 text-cyan-400" />
                 <span className="font-bold th-text uppercase tracking-widest text-xs">
-                  ENGINE
+                  {t("ENGINE")}
                 </span>
               </div>
 
               <div className="space-y-3">
                 <div className="space-y-1">
                   <label className="th-text-3 text-[10px] uppercase font-bold">
-                    ASR & LLM Engine Provider
+                    {t("ASR & LLM Engine Provider")}
                   </label>
                   <CustomSelect
                     value={config.provider}
@@ -235,7 +238,7 @@ export function Translate() {
 
                 <div className="space-y-1">
                   <label className="th-text-3 text-[10px] uppercase font-bold">
-                    Translation Model
+                    {t("Translation Model")}
                   </label>
                   {config.provider === "volc_doubao" ? (
                     <div className="space-y-2">
@@ -262,7 +265,7 @@ export function Translate() {
                 {config.provider === "aliyun_bailian" && (
                   <div className="space-y-1">
                     <label className="th-text-3 text-[10px] uppercase font-bold">
-                      ASR Recognition Model
+                      {t("ASR Recognition Model")}
                     </label>
                     <CustomSelect
                       value={config.aliyun_bailian.model}
@@ -284,7 +287,7 @@ export function Translate() {
                 {config.provider === "local_whisper" && (
                   <div className="space-y-1">
                     <label className="th-text-3 text-[10px] uppercase font-bold">
-                      Whisper Model Size
+                      {t("Whisper Model Size")}
                     </label>
                     <CustomSelect
                       value={config.local_whisper.model}
@@ -309,7 +312,7 @@ export function Translate() {
                 {config.provider === "google_chirp3" && (
                   <div className="space-y-1">
                     <label className="th-text-3 text-[10px] uppercase font-bold">
-                      Google Cloud Project ID
+                      {t("Google Cloud Project ID")}
                     </label>
                     <input
                       type="text"
@@ -331,7 +334,7 @@ export function Translate() {
 
                 <div className="space-y-1">
                   <label className="th-text-3 text-[10px] uppercase font-bold">
-                    Target Language
+                    {t("Target Language")}
                   </label>
                   <CustomSelect
                     value={config.target_language}
@@ -354,13 +357,13 @@ export function Translate() {
                 <div className="flex items-center gap-2 border-b th-border pb-2">
                   <Volume2 className="w-4 h-4 text-cyan-400" />
                   <span className="font-bold th-text uppercase tracking-widest text-xs">
-                    AUDIO_MIX
+                    {t("AUDIO_MIX")}
                   </span>
                 </div>
 
                 <div className="space-y-3 pt-2">
                   <div className="flex justify-between items-center text-xs">
-                    <span className="th-text-2">Original Audio Retention</span>
+                    <span className="th-text-2">{t("Original Audio Retention")}</span>
                     <span className="text-cyan-400 font-bold border border-cyan-500/20 px-1.5 py-0.5 rounded bg-cyan-500/5">
                       {replaceOriginalAudio ? "0%" : `${Math.round(originalAudioVolume * 100)}%`}
                     </span>
@@ -392,7 +395,7 @@ export function Translate() {
                   className="w-4 h-4 border th-border rounded bg-transparent checked:bg-cyan-500 focus:outline-none"
                 />
                 <span className="th-text-2 font-medium">
-                  Mute Original Audio Entirely
+                  {t("Mute Original Audio Entirely")}
                 </span>
               </label>
             </div>
@@ -403,7 +406,7 @@ export function Translate() {
             <div className="flex items-center gap-2 border-b th-border pb-2">
               <Captions className="w-4 h-4 text-cyan-400" />
               <span className="font-bold th-text uppercase tracking-widest text-xs">
-                SUBTITLES
+                {t("SUBTITLES")}
               </span>
             </div>
 
@@ -417,10 +420,10 @@ export function Translate() {
                 />
                 <span className="space-y-1">
                   <span className="block th-text font-bold text-xs">
-                    英文字幕
+                    {t("Source Subtitles")}
                   </span>
                   <span className="block text-[10px] th-text-muted leading-relaxed">
-                    使用 ASR 识别出的英文原文字幕。
+                    {t("Use original subtitles detected by ASR.")}
                   </span>
                 </span>
               </label>
@@ -434,10 +437,10 @@ export function Translate() {
                 />
                 <span className="space-y-1">
                   <span className="block th-text font-bold text-xs">
-                    目标语言字幕：{targetLanguageLabel}
+                    {t("Target Subtitles: {lang}", { lang: targetLanguageLabel })}
                   </span>
                   <span className="block text-[10px] th-text-muted leading-relaxed">
-                    使用翻译后的目标语言字幕。
+                    {t("Use translated target language subtitles.")}
                   </span>
                 </span>
               </label>
@@ -445,10 +448,10 @@ export function Translate() {
 
             <p className="text-[10px] th-text-muted leading-relaxed">
               {showEnglishSubtitles && showTargetLanguageSubtitles
-                ? "双语字幕已启用：英文显示在上方，目标语言显示在下方，两排文字独立换行避免重叠。"
+                ? t("Bilingual subtitles enabled. Source on top, target at the bottom.")
                 : showEnglishSubtitles || showTargetLanguageSubtitles
-                  ? "单语字幕已启用：字幕将嵌入最终导出视频。"
-                  : "未启用字幕：最终视频只混合语音轨道，不嵌入字幕。"}
+                  ? t("Monolingual subtitles enabled. Subtitles will be burned into the final video.")
+                  : t("Subtitles disabled. Final video will only mix audio tracks.")}
             </p>
           </div>
         </div>
@@ -460,7 +463,7 @@ export function Translate() {
               <div className="flex items-center gap-2 border-b th-border pb-2">
                 <Sliders className="w-4 h-4 text-cyan-400" />
                 <span className="font-bold th-text uppercase tracking-widest text-xs">
-                  SYNTHESIS
+                  {t("SYNTHESIS")}
                 </span>
               </div>
 
@@ -475,7 +478,7 @@ export function Translate() {
               >
                 <div className="flex items-center justify-between">
                   <span className="font-bold th-text text-[13px] tracking-wide">
-                    {config.provider === "volc_doubao" ? "Doubao Voice Model" : "Bailian Voice Model"}
+                    {config.provider === "volc_doubao" ? t("Default Voice Model") : t("Default Voice Model")}
                   </span>
                   <div
                     className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
@@ -486,9 +489,7 @@ export function Translate() {
                   />
                 </div>
                 <p className="text-[11px] th-text-muted leading-relaxed">
-                  {config.provider === "volc_doubao"
-                    ? "Doubao Voice Library. Select from pre-trained professional models (Seed-TTS)."
-                    : "Bailian Voice Library. Select from pre-trained professional models (CosyVoice, Sambert)."}
+                  {t("Standard preset voice models (Seed-TTS / Sambert).")}
                 </p>
                 <ul className="text-[10px] th-text-2 font-semibold space-y-1 pt-1 font-mono uppercase tracking-wider">
                   {config.provider === "volc_doubao" ? (
@@ -520,7 +521,7 @@ export function Translate() {
 
                 <div className="flex items-center justify-between pt-1">
                   <span className="font-bold th-text text-[13px] tracking-wide flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-purple-400" /> Voice Cloning
+                    <Sparkles className="w-3.5 h-3.5 text-purple-400" /> {t("Voice Cloning")}
                   </span>
                   <div
                     className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
@@ -531,9 +532,7 @@ export function Translate() {
                   />
                 </div>
                 <p className="text-[11px] th-text-muted leading-relaxed">
-                  {config.provider === "volc_doubao"
-                    ? "Extract and replicate original speaker's timbre using Seed-ICL 2.0 zero-shot voice cloning."
-                    : "Extract and replicate original speaker's timbre, emotional tone, and ambient noise levels dynamically."}
+                  {t("Clone original speaker's timbre, emotional tone, and ambient noise levels dynamically.")}
                 </p>
               </div>
             </div>
@@ -542,7 +541,7 @@ export function Translate() {
             {synthesisMode === "default" && (
               <div className="space-y-2 pt-4 border-t th-border mt-4">
                 <label className="block th-text-3 text-[10px] uppercase font-bold">
-                  Select Preset Voice Timbre
+                  {t("Select Preset Voice Timbre")}
                 </label>
                 <CustomSelect
                   value={ttsVoice}

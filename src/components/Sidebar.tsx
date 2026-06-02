@@ -8,15 +8,17 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
+import { useI18n } from "../i18n";
 
 export function Sidebar() {
   const { activePage, setActivePage } = useIntervox();
+  const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(false);
 
   const menuItems = [
-    { id: "player", label: "播放器 Player", icon: Video },
-    { id: "translate", label: "翻译配置 Translate", icon: Languages },
-    { id: "tasks", label: "任务状态 Tasks", icon: Activity },
+    { id: "player", label: t("Player"), icon: Video },
+    { id: "translate", label: t("Translate"), icon: Languages },
+    { id: "tasks", label: t("Tasks"), icon: Activity },
   ];
 
   return (
@@ -40,7 +42,7 @@ export function Sidebar() {
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="p-1 rounded th-hover-surface th-text-muted hover:th-text"
-          title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+          title={collapsed ? t("Show playback history") : t("Hide playback history")}
         >
           {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
         </button>
@@ -79,12 +81,13 @@ export function Sidebar() {
               ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 shadow-sm text-glow"
               : "border-transparent th-text-3 th-hover-surface"
           } ${collapsed ? "justify-center" : ""}`}
-          title={collapsed ? "参数设置 Settings" : undefined}
+          title={collapsed ? t("Settings") : undefined}
         >
           <SettingsIcon className="w-4 h-4 flex-shrink-0" />
-          {!collapsed && <span>参数设置 Settings</span>}
+          {!collapsed && <span>{t("Settings")}</span>}
         </button>
       </div>
     </aside>
   );
 }
+
