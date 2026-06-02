@@ -6,7 +6,7 @@ import {
   RotateCcw,
   Download,
   FolderOpen,
-  Terminal,
+  Activity,
   FileText,
   Volume2,
   Languages,
@@ -69,7 +69,7 @@ export function Tasks() {
       {/* Page Header */}
       <div className="flex items-center justify-between border-b th-border pb-4">
         <div className="flex items-center gap-3">
-          <Terminal className="w-6 h-6 text-cyan-400" />
+          <Activity className="w-6 h-6 text-cyan-400" />
           <h2 className="text-xl font-bold th-text tracking-tight uppercase">
             {t("Operation Queue")}
           </h2>
@@ -211,7 +211,7 @@ export function Tasks() {
         </div>
       ) : (
         <div className="border th-border bg-black/20 p-8 rounded-sm text-center flex flex-col items-center justify-center space-y-2">
-          <Terminal className="w-8 h-8 th-text-muted" />
+          <Activity className="w-8 h-8 th-text-muted" />
           <span className="font-bold th-text text-xs uppercase tracking-widest">
             {t("NO ACTIVE Dubbing tasks")}
           </span>
