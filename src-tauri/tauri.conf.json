@@ -30,6 +30,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": []
+    "icon": [],
+    "externalBin": ["binaries/yt-dlp"],
+    "resources": ["third-party/yt-dlp/*"]
   }
 }

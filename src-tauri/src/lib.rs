@@ -1,5 +1,6 @@
 mod asr;
 mod credentials;
+mod downloader;
 mod export;
 mod playback_server;
 mod storage;
@@ -11,6 +12,7 @@ use asr::{
     CredentialValidationResult, TranscriptDocument,
 };
 use credentials::CredentialStore;
+use downloader::{DownloadAnalysis, DownloadRequest, DownloadResult, YtDlpDownloadRequest};
 use export::{ExportRequest, ExportResult};
 use tauri::Emitter;
 use translation::{TranslationDocument, TranslationRequest};
@@ -263,6 +265,43 @@ fn validate_tts_cache(tts: TtsDocument) -> bool {
 }
 
 #[tauri::command]
+async fn analyze_download_url(url: String) -> Result<DownloadAnalysis, String> {
+    tauri::async_runtime::spawn_blocking(move || downloader::analyze(&url))
+        .await
+        .map_err(|error| format!("解析任务异常终止：{error}"))?
+}
+
+#[tauri::command]
+async fn download_remote_resource(
+    app: tauri::AppHandle,
+    request: DownloadRequest,
+) -> Result<DownloadResult, String> {
+    let app_for_progress = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        downloader::download_with_progress(request, move |progress| {
+            let _ = app_for_progress.emit("download-progress", progress);
+        })
+    })
+    .await
+    .map_err(|error| format!("下载任务异常终止：{error}"))?
+}
+
+#[tauri::command]
+async fn download_page_with_yt_dlp(
+    app: tauri::AppHandle,
+    request: YtDlpDownloadRequest,
+) -> Result<DownloadResult, String> {
+    let app_for_progress = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        downloader::download_page_with_yt_dlp(request, move |progress| {
+            let _ = app_for_progress.emit("download-progress", progress);
+        })
+    })
+    .await
+    .map_err(|error| format!("下载任务异常终止：{error}"))?
+}
+
+#[tauri::command]
 async fn export_dubbed_video(
     app: tauri::AppHandle,
     request: ExportRequest,
@@ -413,6 +452,9 @@ pub fn run() {
             translate_transcript,
             synthesize_tts,
             validate_tts_cache,
+            analyze_download_url,
+            download_remote_resource,
+            download_page_with_yt_dlp,
             export_dubbed_video,
             prepare_video_for_playback,
             select_local_file,

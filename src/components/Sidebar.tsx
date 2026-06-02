@@ -7,6 +7,7 @@ import {
   ChevronRight,
   AudioLines,
   Activity,
+  Download,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
 import { useI18n } from "../i18n";
@@ -21,6 +22,7 @@ export function Sidebar() {
     { id: "player", label: t("Player"), icon: Video },
     { id: "translate", label: t("Translate"), icon: Languages },
     { id: "tasks", label: t("Tasks"), icon: Activity },
+    { id: "downloader", label: t("Downloader"), icon: Download },
   ];
 
   return (
@@ -100,4 +102,3 @@ export function Sidebar() {
     </aside>
   );
 }
-

@@ -5,6 +5,7 @@ import { Player } from "./pages/Player";
 import { Translate } from "./pages/Translate";
 import { Tasks } from "./pages/Tasks";
 import { Settings } from "./pages/Settings";
+import { Downloader } from "./pages/Downloader";
 import { CheckCircle, AlertTriangle, Info } from "lucide-react";
 
 function IntervoxContent() {
@@ -46,6 +47,7 @@ function IntervoxContent() {
           {activePage === "player" && <Player />}
           {activePage === "translate" && <Translate />}
           {activePage === "tasks" && <Tasks />}
+          {activePage === "downloader" && <Downloader />}
           {activePage === "settings" && <Settings />}
         </main>
       </div>
