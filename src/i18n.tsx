@@ -162,7 +162,7 @@ const translations = {
   zh: {
     // 侧边栏及常规
     "Player": "播放器",
-    "Translate": "翻译配置",
+    "Translate": "翻译",
     "Tasks": "任务",
     "Settings": "参数设置",
     
