@@ -949,26 +949,6 @@ impl AsrProvider for LocalWhisperProvider {
     }
 }
 
-fn demo_transcript(
-    provider: AsrProviderId,
-    request: &AsrTranscriptionRequest,
-    text: &str,
-) -> TranscriptDocument {
-    TranscriptDocument {
-        source_language: request.config.source_language.clone(),
-        target_language: request.config.target_language.clone(),
-        provider,
-        segments: vec![TranscriptSegment {
-            id: format!("seg_{}", Uuid::new_v4()),
-            start_ms: 0,
-            end_ms: 3200,
-            speaker_id: Some("speaker_1".to_string()),
-            text: text.to_string(),
-            confidence: Some(0.93),
-        }],
-    }
-}
-
 fn parse_volc_flash_transcription_result(
     request: &AsrTranscriptionRequest,
     provider: AsrProviderId,
