@@ -443,9 +443,6 @@ export function Downloader() {
           <DownloadIcon className="w-6 h-6 text-cyan-400" />
           <div>
             <h2 className="text-xl font-bold th-text tracking-tight">{t("Downloader")}</h2>
-            <p className="text-[10px] th-text-muted mt-1">
-              {t("Resolve downloadable media and subtitle tracks from a page URL.")}
-            </p>
           </div>
         </div>
       </div>

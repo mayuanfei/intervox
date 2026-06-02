@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect } from "react";
 import {
   History,
   Languages,
+  Video,
   Play,
   Pause,
   Volume2,
@@ -561,7 +562,7 @@ export function Player() {
       {/* Title Header */}
       <div className="flex items-center justify-between border-b th-border pb-4 mb-2">
         <div className="flex items-center gap-3">
-          <Play className="w-6 h-6 text-cyan-400 fill-cyan-400/25" />
+          <Video className="w-6 h-6 text-cyan-400" />
           <h2 className="text-xl font-bold th-text tracking-tight">
             {t("Player")}
           </h2>
