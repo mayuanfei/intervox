@@ -68,13 +68,11 @@ export function Tasks() {
     <div className="space-y-6 font-mono text-[13px] animate-fade-in">
       {/* Page Header */}
       <div className="flex items-center justify-between border-b th-border pb-4">
-        <div>
+        <div className="flex items-center gap-3">
+          <Terminal className="w-6 h-6 text-cyan-400" />
           <h2 className="text-xl font-bold th-text tracking-tight uppercase">
             {t("Operation Queue")}
           </h2>
-          <p className="text-xs th-text-muted mt-1 uppercase tracking-wider">
-            {t("SYSTEM STATUS")}: <span className="text-emerald-400 font-bold">{t("OPTIMAL")}</span> // {t("THREADS")}: 12/16
-          </p>
         </div>
         {finishedTasks.length > 0 && (
           <button

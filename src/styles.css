@@ -33,6 +33,35 @@
   color-scheme: dark;
 }
 
+:root.light {
+  --bg-app: #f3f4f6;       /* Slate 100 */
+  --bg-main: #f9fafb;      /* Slate 50 */
+  --bg-card: #ffffff;      /* White card */
+  --bg-surface: #e5e7eb;   /* Slate 200 */
+  --bg-surface-hover: rgba(229, 231, 235, 0.6);
+  --bg-input: #ffffff;     /* White input */
+
+  --border-default: #d1d5db; /* Slate 300 */
+  --border-subtle: #9ca3af;  /* Slate 400 */
+  --border-neon: rgba(6, 182, 212, 0.15);
+  --accent-cyan: #0891b2;   /* Cyan 600 */
+  --accent-cyan-hover: #0e7490;
+  --accent-cyan-glow: rgba(8, 145, 178, 0.2);
+
+  --text-primary: #111827;  /* Slate 900 */
+  --text-secondary: #374151; /* Slate 700 */
+  --text-tertiary: #4b5563;  /* Slate 600 */
+  --text-muted: #9ca3af;     /* Slate 400 */
+  
+  --scrollbar-thumb: #e5e7eb;
+  --scrollbar-thumb-hover: #d1d5db;
+
+  --selection-bg: rgba(6, 182, 212, 0.15);
+  --selection-text: #111827;
+  
+  color-scheme: light;
+}
+
 body {
   background-color: var(--bg-app);
   color: var(--text-secondary);

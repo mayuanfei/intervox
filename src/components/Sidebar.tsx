@@ -6,9 +6,11 @@ import {
   Settings as SettingsIcon,
   ChevronLeft,
   ChevronRight,
+  AudioLines,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
 import { useI18n } from "../i18n";
+import logoImg from "../logo.png";
 
 export function Sidebar() {
   const { activePage, setActivePage } = useIntervox();
@@ -27,26 +29,34 @@ export function Sidebar() {
         collapsed ? "w-16" : "w-64"
       }`}
     >
-      {/* Header Info */}
-      <div className="p-5 flex items-center justify-between border-b th-border">
-        {!collapsed && (
-          <div className="flex flex-col">
-            <span className="font-extrabold text-xl tracking-wider text-glow text-cyan-400">
+      {collapsed ? (
+        <div className="px-1 py-4 flex items-center justify-between border-b th-border min-h-[65px]">
+          <img src={logoImg} className="w-8 h-8 object-contain" alt="Intervox" />
+          <button
+            onClick={() => setCollapsed(false)}
+            className="p-1 rounded-md border th-border bg-[#0a101f]/80 text-cyan-400 hover:text-cyan-300 hover:border-cyan-500/50 hover:bg-cyan-950/20 transition-all flex items-center justify-center cursor-pointer shadow-sm shadow-cyan-500/5"
+            title={t("Show playback history")}
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      ) : (
+        <div className="p-4 flex items-center justify-between border-b th-border min-h-[65px]">
+          <div className="flex items-center gap-2.5">
+            <img src={logoImg} className="w-8 h-8 object-contain" alt="Intervox" />
+            <span className="font-extrabold text-lg tracking-wider text-glow text-cyan-400 select-none">
               INTERVOX
             </span>
-            <span className="text-[10px] th-text-muted font-mono tracking-widest mt-0.5">
-              V.2.0.4-BETA
-            </span>
           </div>
-        )}
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="p-1 rounded th-hover-surface th-text-muted hover:th-text"
-          title={collapsed ? t("Show playback history") : t("Hide playback history")}
-        >
-          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-        </button>
-      </div>
+          <button
+            onClick={() => setCollapsed(true)}
+            className="p-1.5 rounded-md border th-border bg-[#0a101f]/80 text-cyan-400 hover:text-cyan-300 hover:border-cyan-500/50 hover:bg-cyan-950/20 transition-all flex items-center justify-center cursor-pointer shadow-sm shadow-cyan-500/5"
+            title={t("Hide playback history")}
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Nav List */}
       <nav className="flex-1 py-6 px-3 space-y-1.5">

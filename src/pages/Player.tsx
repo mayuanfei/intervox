@@ -547,7 +547,6 @@ export function Player() {
       return t("Unknown time");
     }
   };
-
   return (
     <div className="space-y-4 font-mono text-[13px] animate-fade-in">
       {/* Hidden File Picker Input */}
@@ -558,6 +557,16 @@ export function Player() {
         accept="video/*,audio/*,.rm,.rmvb"
         className="hidden"
       />
+
+      {/* Title Header */}
+      <div className="flex items-center justify-between border-b th-border pb-4 mb-2">
+        <div className="flex items-center gap-3">
+          <Play className="w-6 h-6 text-cyan-400 fill-cyan-400/25" />
+          <h2 className="text-xl font-bold th-text tracking-tight">
+            {t("Player")}
+          </h2>
+        </div>
+      </div>
 
       {/* Top Playback Control Bar */}
       <div className="flex flex-wrap items-center gap-3 bg-[#0a101f] border th-border p-3 rounded-sm">

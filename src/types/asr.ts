@@ -41,6 +41,7 @@ export interface AsrConfig {
   local_whisper: {
     model: WhisperModel;
     model_path: string;
+    translation_endpoint?: string;
   };
 }
 

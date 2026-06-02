@@ -48,6 +48,8 @@ export interface IntervoxTask {
 export type MediaInputMode = "public_url" | "local_file";
 
 interface IntervoxContextType {
+  theme: "dark" | "light";
+  setTheme: (theme: "dark" | "light") => void;
   config: AsrConfig;
   setConfig: React.Dispatch<React.SetStateAction<AsrConfig>>;
   activePage: string;
@@ -230,6 +232,26 @@ function outputPath(outputDir: string, fileName: string) {
 }
 
 export function IntervoxProvider({ children }: { children: React.ReactNode }) {
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    try {
+      const saved = localStorage.getItem("intervox_theme");
+      return (saved as "dark" | "light") || "dark";
+    } catch {
+      return "dark";
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("intervox_theme", theme);
+    } catch {}
+    if (theme === "light") {
+      document.documentElement.classList.add("light");
+    } else {
+      document.documentElement.classList.remove("light");
+    }
+  }, [theme]);
+
   const [activePage, setActivePage] = useState("player");
   const [config, setConfig] = useState<AsrConfig>(() => {
     try {
@@ -1447,6 +1469,8 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         tts,
         setTts,
         exportResult,
+        theme,
+        setTheme,
         setExportResult,
         synthesisMode,
         setSynthesisMode,

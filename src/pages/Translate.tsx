@@ -99,13 +99,11 @@ export function Translate() {
     <div className="space-y-6 font-mono text-[13px] animate-fade-in">
       {/* Title Header */}
       <div className="flex items-center justify-between border-b th-border pb-4">
-        <div>
+        <div className="flex items-center gap-3">
+          <Sliders className="w-6 h-6 text-cyan-400" />
           <h2 className="text-xl font-bold th-text tracking-tight">
             {t("Configuration Studio")}
           </h2>
-          <p className="text-xs th-text-muted mt-1 uppercase tracking-wider">
-            {t("Define processing pipelines & synthesis variables")}
-          </p>
         </div>
         <div>
           <button

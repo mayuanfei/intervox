@@ -31,6 +31,7 @@ export const DEFAULT_ASR_CONFIG: AsrConfig = {
   local_whisper: {
     model: "small",
     model_path: "",
+    translation_endpoint: "http://localhost:11434/v1",
   },
 };
 

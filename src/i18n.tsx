@@ -146,6 +146,18 @@ const translations = {
     "Active": "Active",
     "Missing Key": "Missing Key",
     "Saved": "Saved",
+    "GLOBAL PREFERENCES": "GLOBAL PREFERENCES",
+    "INTERFACE & APPEARANCE": "INTERFACE & APPEARANCE",
+    "UI_THEME": "UI_THEME",
+    "Dark Theme": "Dark Theme",
+    "Light Theme": "Light Theme",
+    "INFERENCE PROVIDERS CREDENTIALS": "INFERENCE PROVIDERS CREDENTIALS",
+    "Alibaba Bailian API": "Alibaba Bailian API",
+    "Volcengine Speech API": "Volcengine Speech API",
+    "Local Inference Service": "Local Inference Service",
+    "Local Models Description": "Configure local speech recognition (Whisper) or local translation endpoints. Keep operations fully offline and private.",
+    "Whisper Model": "Whisper Model",
+    "Local Translation Endpoint": "Local Translation Endpoint",
   },
   zh: {
     // 侧边栏及常规
@@ -290,6 +302,18 @@ const translations = {
     "Active": "连接正常",
     "Missing Key": "未配置密钥",
     "Saved": "已保存",
+    "GLOBAL PREFERENCES": "全局运行偏好",
+    "INTERFACE & APPEARANCE": "界面与外观",
+    "UI_THEME": "界面主题",
+    "Dark Theme": "科技暗黑",
+    "Light Theme": "极客明亮",
+    "INFERENCE PROVIDERS CREDENTIALS": "推理服务商凭证管理",
+    "Alibaba Bailian API": "阿里百炼 API",
+    "Volcengine Speech API": "火山引擎 API",
+    "Local Inference Service": "本地推理服务",
+    "Local Models Description": "配置本地语音识别 (Whisper) 或本地翻译节点 (如 Ollama)。使您的处理流程完全离线且数据私密安全。",
+    "Whisper Model": "Whisper 模型",
+    "Local Translation Endpoint": "本地翻译接口地址",
   }
 };
 
