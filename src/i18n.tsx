@@ -9,6 +9,9 @@ const translations = {
     "Translate": "Translate",
     "Tasks": "Tasks",
     "Settings": "Settings",
+    "Media & Engine": "Media & Engine",
+    "Mix & Subtitles": "Mix & Subtitles",
+    "Synthesis & Run": "Synthesis & Run",
     
     // Player
     "STREAM_PLAY": "STREAM_PLAY",
@@ -165,6 +168,9 @@ const translations = {
     "Translate": "翻译",
     "Tasks": "任务",
     "Settings": "参数设置",
+    "Media & Engine": "资源与引擎",
+    "Mix & Subtitles": "混音与字幕",
+    "Synthesis & Run": "配音与合成",
     
     // Player
     "STREAM_PLAY": "在线流播放",
