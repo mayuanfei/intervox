@@ -91,7 +91,7 @@ export function Translate() {
     }
   };
 
-  const activePath = mediaInputMode === "public_url" ? mediaUrl : localMediaPath;
+  const activePath = localMediaPath;
   const isInputReady = activePath.trim().length > 0;
   const targetLanguageLabel =
     TARGET_LANGUAGE_OPTIONS.find((option) => option.value === config.target_language)?.label ||
@@ -110,86 +110,49 @@ export function Translate() {
       </div>
 
       <div className="flex flex-col gap-6 w-full">
-        {/* Step Navigation Indicator & Actions */}
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between border th-border th-bg-card p-4 rounded-sm select-none gap-4">
-          {/* Left: Step Indicators */}
-          <div className="flex items-center gap-2.5 flex-1 w-full md:w-auto overflow-x-auto scrollbar-none">
-            {[
-              { step: 1, label: t("Media & Engine") },
-              { step: 2, label: t("Mix & Subtitles") },
-              { step: 3, label: t("Synthesis & Run") },
-            ].map((item, idx) => {
-              const isActive = currentStep === item.step;
-              const isCompleted = currentStep > item.step;
-              return (
-                <React.Fragment key={item.step}>
-                  <button
-                    onClick={() => setCurrentStep(item.step)}
-                    className={`flex items-center gap-2.5 px-3 py-1.5 rounded transition-all font-bold text-xs uppercase tracking-widest border cursor-pointer flex-shrink-0 ${
-                      isActive
-                        ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 shadow-sm text-glow"
-                        : isCompleted
-                        ? "border-cyan-500/20 text-cyan-400/70 hover:text-cyan-400 bg-cyan-950/5"
-                        : "border-transparent th-text-muted hover:th-text"
-                    }`}
-                  >
-                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] border transition-all ${
-                      isActive
-                        ? "border-cyan-400 bg-cyan-950 text-cyan-400 text-glow font-extrabold"
-                        : isCompleted
-                        ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-400"
-                        : "th-border th-text-muted bg-black/20"
-                    }`}>
-                      {item.step}
-                    </span>
-                    <span>{item.label}</span>
-                  </button>
+        {/* Step Navigation Indicator */}
+        <div className="flex items-center justify-between border th-border th-bg-card p-4 rounded-sm select-none">
+          {[
+            { step: 1, label: t("Media & Engine") },
+            { step: 2, label: t("Mix & Subtitles") },
+            { step: 3, label: t("Synthesis & Run") },
+          ].map((item, idx) => {
+            const isActive = currentStep === item.step;
+            const isCompleted = currentStep > item.step;
+            return (
+              <React.Fragment key={item.step}>
+                <button
+                  onClick={() => setCurrentStep(item.step)}
+                  className={`flex items-center gap-2.5 px-4 py-2 rounded transition-all font-bold text-xs uppercase tracking-widest border cursor-pointer ${
+                    isActive
+                      ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 shadow-sm text-glow"
+                      : isCompleted
+                      ? "border-cyan-500/20 text-cyan-400/70 hover:text-cyan-400 bg-cyan-950/5"
+                      : "border-transparent th-text-muted hover:th-text"
+                  }`}
+                >
+                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] border transition-all ${
+                    isActive
+                      ? "border-cyan-400 bg-cyan-950 text-cyan-400 text-glow font-extrabold"
+                      : isCompleted
+                      ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-400"
+                      : "th-border th-text-muted bg-black/20"
+                  }`}>
+                    {item.step}
+                  </span>
+                  <span>{item.label}</span>
+                </button>
 
-                  {idx < 2 && (
-                    <div className="flex-1 h-[2px] min-w-[20px] mx-2 bg-slate-800/80 relative overflow-hidden hidden md:block">
-                      {currentStep > item.step && (
-                        <div className="absolute inset-0 bg-gradient-to-r from-cyan-500 to-cyan-400" />
-                      )}
-                    </div>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </div>
-
-          {/* Right: Step Navigation Actions */}
-          <div className="flex items-center gap-3 w-full md:w-auto justify-end border-t md:border-t-0 th-border pt-3 md:pt-0">
-            {currentStep > 1 && (
-              <button
-                onClick={() => setCurrentStep(currentStep - 1)}
-                className="px-4 py-2 border th-border th-text-3 hover:th-text hover:bg-cyan-950/10 font-bold rounded-sm transition-all text-xs uppercase tracking-widest cursor-pointer"
-              >
-                上一步
-              </button>
-            )}
-            {currentStep < 3 && (
-              <button
-                onClick={() => setCurrentStep(currentStep + 1)}
-                className="px-4 py-2 bg-cyan-400 hover:bg-cyan-300 text-black font-extrabold rounded-sm transition-all shadow-md text-xs uppercase tracking-widest cursor-pointer"
-              >
-                下一步
-              </button>
-            )}
-            {currentStep === 3 && (
-              <button
-                onClick={startFullPipeline}
-                disabled={!isInputReady}
-                className={`px-5 py-2 text-xs font-extrabold tracking-widest transition-all uppercase rounded-sm flex items-center justify-center gap-2 shadow-md ${
-                  isInputReady
-                    ? "bg-cyan-400 text-black hover:bg-cyan-300 shadow-cyan-500/20 cursor-pointer"
-                    : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
-                }`}
-              >
-                <Zap className={`w-3.5 h-3.5 ${isInputReady ? "animate-pulse" : ""}`} />
-                {t("START PROCESS")}
-              </button>
-            )}
-          </div>
+                {idx < 2 && (
+                  <div className="flex-1 h-[2px] mx-4 bg-slate-800/80 relative overflow-hidden hidden md:block">
+                    {currentStep > item.step && (
+                      <div className="absolute inset-0 bg-gradient-to-r from-cyan-500 to-cyan-400" />
+                    )}
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
         </div>
 
         {/* Step Content */}
@@ -204,77 +167,21 @@ export function Translate() {
                 </span>
               </div>
 
-              <div className="inline-flex rounded-md border th-border bg-black/40 p-1 mb-2">
+              <div className="flex items-center gap-3">
                 <button
-                  onClick={() => setMediaInputMode("local_file")}
-                  className={`h-8 rounded px-3 text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer ${
-                    mediaInputMode === "local_file"
-                      ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
-                      : "text-slate-400 hover:text-slate-200"
-                  }`}
+                  onClick={handleSelectFile}
+                  className="px-4 py-2 bg-cyan-500/10 border border-cyan-500/30 hover:border-cyan-400 hover:bg-cyan-500/20 text-cyan-400 font-extrabold rounded-sm transition-all text-xs uppercase tracking-widest cursor-pointer flex-shrink-0"
                 >
-                  {t("Local File")}
+                  选择源文件
                 </button>
-                <button
-                  onClick={() => setMediaInputMode("public_url")}
-                  className={`h-8 rounded px-3 text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer ${
-                    mediaInputMode === "public_url"
-                      ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
-                      : "text-slate-400 hover:text-slate-200"
-                  }`}
-                >
-                  {t("Public URL")}
-                </button>
+                <input
+                  type="text"
+                  value={localMediaPath}
+                  onChange={(e) => setLocalMediaPath(e.target.value)}
+                  placeholder="请选择或输入本地视频文件路径..."
+                  className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
+                />
               </div>
-
-              {mediaInputMode === "local_file" ? (
-                <div className="space-y-4">
-                  <div
-                    onClick={handleSelectFile}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    className={`border-2 border-dashed bg-black/20 transition-all p-8 flex flex-col items-center justify-center cursor-pointer rounded-sm ${
-                      isDragOver ? "border-cyan-400 bg-cyan-500/5" : "th-border hover:bg-cyan-500/5"
-                    }`}
-                  >
-                    <div className="w-10 h-10 rounded-full bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20 text-cyan-400 mb-2">
-                      <FileVideo className="w-5 h-5" />
-                    </div>
-                    <span className="font-bold th-text text-xs uppercase tracking-widest">
-                      {t("Local File Selection")}
-                    </span>
-                    <span className="text-[10px] th-text-muted mt-1">
-                      {t("Drag and drop or click to choose from system files")}
-                    </span>
-                  </div>
-                  <div className="space-y-1">
-                    <span className="th-text-3 text-[10px] uppercase font-bold">
-                      {t("Target File Path")}
-                    </span>
-                    <input
-                      type="text"
-                      value={localMediaPath}
-                      onChange={(e) => setLocalMediaPath(e.target.value)}
-                      placeholder="/volumes/data/input_video_01.mp4"
-                      className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <span className="th-text-3 text-[10px] uppercase font-bold">
-                    {t("Network Stream Link")}
-                  </span>
-                  <input
-                    type="text"
-                    value={mediaUrl}
-                    onChange={(e) => setMediaUrl(e.target.value)}
-                    placeholder="https://example.com/stream-source.mp4"
-                    className="w-full px-3 py-2 border th-border th-bg-input th-text focus:outline-none focus:border-cyan-500/50"
-                  />
-                </div>
-              )}
             </div>
 
             {/* Engine Card */}
