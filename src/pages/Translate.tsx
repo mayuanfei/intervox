@@ -110,49 +110,86 @@ export function Translate() {
       </div>
 
       <div className="flex flex-col gap-6 w-full">
-        {/* Step Navigation Indicator */}
-        <div className="flex items-center justify-between border th-border th-bg-card p-4 rounded-sm select-none">
-          {[
-            { step: 1, label: t("Media & Engine") },
-            { step: 2, label: t("Mix & Subtitles") },
-            { step: 3, label: t("Synthesis & Run") },
-          ].map((item, idx) => {
-            const isActive = currentStep === item.step;
-            const isCompleted = currentStep > item.step;
-            return (
-              <React.Fragment key={item.step}>
-                <button
-                  onClick={() => setCurrentStep(item.step)}
-                  className={`flex items-center gap-2.5 px-4 py-2 rounded transition-all font-bold text-xs uppercase tracking-widest border cursor-pointer ${
-                    isActive
-                      ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 shadow-sm text-glow"
-                      : isCompleted
-                      ? "border-cyan-500/20 text-cyan-400/70 hover:text-cyan-400 bg-cyan-950/5"
-                      : "border-transparent th-text-muted hover:th-text"
-                  }`}
-                >
-                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] border transition-all ${
-                    isActive
-                      ? "border-cyan-400 bg-cyan-950 text-cyan-400 text-glow font-extrabold"
-                      : isCompleted
-                      ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-400"
-                      : "th-border th-text-muted bg-black/20"
-                  }`}>
-                    {item.step}
-                  </span>
-                  <span>{item.label}</span>
-                </button>
+        {/* Step Navigation Indicator & Actions */}
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between border th-border th-bg-card p-4 rounded-sm select-none gap-4">
+          {/* Left: Step Indicators */}
+          <div className="flex items-center gap-2.5 flex-1 w-full md:w-auto overflow-x-auto scrollbar-none">
+            {[
+              { step: 1, label: t("Media & Engine") },
+              { step: 2, label: t("Mix & Subtitles") },
+              { step: 3, label: t("Synthesis & Run") },
+            ].map((item, idx) => {
+              const isActive = currentStep === item.step;
+              const isCompleted = currentStep > item.step;
+              return (
+                <React.Fragment key={item.step}>
+                  <button
+                    onClick={() => setCurrentStep(item.step)}
+                    className={`flex items-center gap-2.5 px-3 py-1.5 rounded transition-all font-bold text-xs uppercase tracking-widest border cursor-pointer flex-shrink-0 ${
+                      isActive
+                        ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 shadow-sm text-glow"
+                        : isCompleted
+                        ? "border-cyan-500/20 text-cyan-400/70 hover:text-cyan-400 bg-cyan-950/5"
+                        : "border-transparent th-text-muted hover:th-text"
+                    }`}
+                  >
+                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] border transition-all ${
+                      isActive
+                        ? "border-cyan-400 bg-cyan-950 text-cyan-400 text-glow font-extrabold"
+                        : isCompleted
+                        ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-400"
+                        : "th-border th-text-muted bg-black/20"
+                    }`}>
+                      {item.step}
+                    </span>
+                    <span>{item.label}</span>
+                  </button>
 
-                {idx < 2 && (
-                  <div className="flex-1 h-[2px] mx-4 bg-slate-800/80 relative overflow-hidden hidden md:block">
-                    {currentStep > item.step && (
-                      <div className="absolute inset-0 bg-gradient-to-r from-cyan-500 to-cyan-400" />
-                    )}
-                  </div>
-                )}
-              </React.Fragment>
-            );
-          })}
+                  {idx < 2 && (
+                    <div className="flex-1 h-[2px] min-w-[20px] mx-2 bg-slate-800/80 relative overflow-hidden hidden md:block">
+                      {currentStep > item.step && (
+                        <div className="absolute inset-0 bg-gradient-to-r from-cyan-500 to-cyan-400" />
+                      )}
+                    </div>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </div>
+
+          {/* Right: Step Navigation Actions */}
+          <div className="flex items-center gap-3 w-full md:w-auto justify-end border-t md:border-t-0 th-border pt-3 md:pt-0">
+            {currentStep > 1 && (
+              <button
+                onClick={() => setCurrentStep(currentStep - 1)}
+                className="px-4 py-2 border th-border th-text-3 hover:th-text hover:bg-cyan-950/10 font-bold rounded-sm transition-all text-xs uppercase tracking-widest cursor-pointer"
+              >
+                上一步
+              </button>
+            )}
+            {currentStep < 3 && (
+              <button
+                onClick={() => setCurrentStep(currentStep + 1)}
+                className="px-4 py-2 bg-cyan-400 hover:bg-cyan-300 text-black font-extrabold rounded-sm transition-all shadow-md text-xs uppercase tracking-widest cursor-pointer"
+              >
+                下一步
+              </button>
+            )}
+            {currentStep === 3 && (
+              <button
+                onClick={startFullPipeline}
+                disabled={!isInputReady}
+                className={`px-5 py-2 text-xs font-extrabold tracking-widest transition-all uppercase rounded-sm flex items-center justify-center gap-2 shadow-md ${
+                  isInputReady
+                    ? "bg-cyan-400 text-black hover:bg-cyan-300 shadow-cyan-500/20 cursor-pointer"
+                    : "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50"
+                }`}
+              >
+                <Zap className={`w-3.5 h-3.5 ${isInputReady ? "animate-pulse" : ""}`} />
+                {t("START PROCESS")}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Step Content */}
