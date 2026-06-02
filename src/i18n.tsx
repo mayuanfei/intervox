@@ -163,7 +163,7 @@ const translations = {
     // 侧边栏及常规
     "Player": "播放器",
     "Translate": "翻译配置",
-    "Tasks": "任务状态",
+    "Tasks": "任务",
     "Settings": "参数设置",
     
     // Player

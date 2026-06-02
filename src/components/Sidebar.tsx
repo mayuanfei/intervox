@@ -2,11 +2,11 @@ import React, { useState } from "react";
 import {
   Video,
   Languages,
-  Activity,
   Settings as SettingsIcon,
   ChevronLeft,
   ChevronRight,
   AudioLines,
+  Terminal,
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
 import { useI18n } from "../i18n";
@@ -20,7 +20,7 @@ export function Sidebar() {
   const menuItems = [
     { id: "player", label: t("Player"), icon: Video },
     { id: "translate", label: t("Translate"), icon: Languages },
-    { id: "tasks", label: t("Tasks"), icon: Activity },
+    { id: "tasks", label: t("Tasks"), icon: Terminal },
   ];
 
   return (
