@@ -33,6 +33,18 @@ export const DEFAULT_ASR_CONFIG: AsrConfig = {
     model_path: "",
     translation_endpoint: "http://localhost:11434/v1",
   },
+  translation: {
+    provider: "aliyun_qwen",
+    model: "qwen-plus",
+    deployment: "china_mainland",
+  },
+  tts: {
+    provider: "aliyun_cosyvoice",
+    model: "cosyvoice-v3-flash",
+    voice: "longxiaochun_v3",
+    synthesis_mode: "default",
+    endpoint: "http://127.0.0.1:3900",
+  },
 };
 
 export const ASR_PROVIDER_OPTIONS: Array<{
@@ -161,4 +173,83 @@ export const DOUBAO_TTS_VOICE_OPTIONS = [
   { value: "zh_male_m191_uranus_bigtts", label: "云舟 清爽沉稳男声 (Uranus - 2.0)" },
   { value: "zh_female_xiaohe_uranus_bigtts", label: "小何 亲切自然女声 (Uranus - 2.0)" },
   { value: "en_male_tim_uranus_bigtts", label: "Tim 英文男声 (Uranus - 2.0)" },
+];
+
+export const TRANSLATION_PROVIDER_OPTIONS = [
+  {
+    value: "aliyun_qwen",
+    label: "阿里云通义千问 (Alibaba Qwen)",
+    summary: "使用通义千问大模型进行上下文理解翻译，译文通顺自然。",
+  },
+  {
+    value: "deepseek",
+    label: "DeepSeek 翻译 (DeepSeek Chat)",
+    summary: "使用 DeepSeek-V3 / R1 级别大模型，兼顾翻译深度与极佳的性价比。",
+  },
+  {
+    value: "google_translate",
+    label: "Google 翻译 (Google Translate)",
+    summary: "官方谷歌翻译接口，支持极多语种，成熟稳定，传统翻译首选。",
+  },
+  {
+    value: "volc_speech_mt",
+    label: "火山机器翻译 (Volc Speech MT)",
+    summary: "火山专业级机器翻译，延时极低，适合大规模字幕快翻。",
+  },
+  {
+    value: "volc_ark",
+    label: "火山方舟大模型 (Volc Ark LLM)",
+    summary: "基于火山方舟部署的豆包/大语言模型，智能上下文翻译。",
+  },
+  {
+    value: "local_llm",
+    label: "本地 LLM 翻译 (Ollama / Local)",
+    summary: "在本地（如 Ollama）运行大模型进行翻译，零数据隐私泄露风险。",
+  },
+];
+
+export const TTS_PROVIDER_OPTIONS = [
+  {
+    value: "aliyun_cosyvoice",
+    label: "阿里云 CosyVoice (Alibaba)",
+    summary: "高拟真语音合成与零样本复刻，声音极其逼真自然。",
+  },
+  {
+    value: "volc_doubao",
+    label: "火山引擎 Seed-TTS (Volcengine)",
+    summary: "新一代超自然语音合成，情感表现力强，支持声音复刻。",
+  },
+  {
+    value: "local_tts",
+    label: "本地 OmniVoice (Local)",
+    summary: "调用本机 OmniVoice Studio，支持离线语音合成与声音克隆。",
+  },
+];
+
+export const DEEPSEEK_TRANSLATION_MODEL_OPTIONS = [
+  { value: "deepseek-v4-flash", label: "deepseek-v4-flash (高速非思考模式)" },
+  { value: "deepseek-v4-pro", label: "deepseek-v4-pro (旗舰推理思考模式)" },
+  { value: "deepseek-chat", label: "deepseek-chat (即将弃用，非思考兼容)" },
+  { value: "deepseek-reasoner", label: "deepseek-reasoner (即将弃用，思考兼容)" },
+];
+
+export const GOOGLE_TRANSLATION_MODEL_OPTIONS = [
+  { value: "google-translate", label: "Google Translate (标准版)" },
+];
+
+export const LOCAL_LLM_TRANSLATION_MODEL_OPTIONS = [
+  { value: "qwen2.5", label: "Qwen 2.5 (本地推荐)" },
+  { value: "qwen2.5:7b", label: "Qwen 2.5 7B" },
+  { value: "qwen2.5:14b", label: "Qwen 2.5 14B" },
+  { value: "llama3", label: "Llama 3" },
+  { value: "mistral", label: "Mistral" },
+];
+
+export const LOCAL_TTS_VOICE_OPTIONS = [
+  { value: "default", label: "OmniVoice 默认音色" },
+  { value: "female, middle-aged, low pitch", label: "中文女声 · 沉稳旁白" },
+  { value: "male, middle-aged, low pitch", label: "中文男声 · 清晰讲解" },
+  { value: "female, young adult, moderate pitch", label: "中文女声 · 自然对话" },
+  { value: "male, young adult, moderate pitch", label: "中文男声 · 活力解说" },
+  { value: "female, young adult, moderate pitch, 四川话", label: "中文女声 · 四川话" },
 ];

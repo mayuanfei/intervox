@@ -20,6 +20,8 @@ pub enum AsrProviderId {
     VolcDoubao,
     VolcArk,
     LocalWhisper,
+    Deepseek,
+    GoogleTranslate,
 }
 
 impl AsrProviderId {
@@ -30,6 +32,8 @@ impl AsrProviderId {
             AsrProviderId::VolcDoubao => "volc_doubao",
             AsrProviderId::VolcArk => "volc_ark",
             AsrProviderId::LocalWhisper => "local_whisper",
+            AsrProviderId::Deepseek => "deepseek",
+            AsrProviderId::GoogleTranslate => "google_translate",
         }
     }
 }
@@ -204,6 +208,21 @@ pub enum WhisperModel {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TranslationConfig {
+    pub provider: String,
+    pub model: String,
+    pub deployment: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TtsConfig {
+    pub provider: String,
+    pub model: String,
+    pub voice: String,
+    pub synthesis_mode: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AsrConfig {
     pub provider: AsrProviderId,
     pub source_language: SourceLanguageCode,
@@ -212,6 +231,8 @@ pub struct AsrConfig {
     pub google_chirp3: GoogleChirp3Config,
     pub volc_doubao: VolcDoubaoConfig,
     pub local_whisper: LocalWhisperConfig,
+    pub translation: TranslationConfig,
+    pub tts: TtsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -355,6 +376,17 @@ pub fn default_asr_config() -> AsrConfig {
             model: WhisperModel::Small,
             model_path: String::new(),
         },
+        translation: TranslationConfig {
+            provider: "aliyun_qwen".to_string(),
+            model: "qwen-plus".to_string(),
+            deployment: "china_mainland".to_string(),
+        },
+        tts: TtsConfig {
+            provider: "aliyun_cosyvoice".to_string(),
+            model: "cosyvoice-v3-flash".to_string(),
+            voice: "longxiaochun_v3".to_string(),
+            synthesis_mode: "default".to_string(),
+        },
     }
 }
 
@@ -422,6 +454,7 @@ fn provider_for(provider: AsrProviderId) -> Box<dyn AsrProvider + Send + Sync> {
         AsrProviderId::VolcDoubao => Box::new(VolcDoubaoProvider),
         AsrProviderId::VolcArk => Box::new(VolcDoubaoProvider),
         AsrProviderId::LocalWhisper => Box::new(LocalWhisperProvider),
+        AsrProviderId::Deepseek | AsrProviderId::GoogleTranslate => Box::new(AliyunBailianProvider),
     }
 }
 
@@ -429,6 +462,30 @@ struct AliyunBailianProvider;
 struct GoogleChirp3Provider;
 struct VolcDoubaoProvider;
 struct LocalWhisperProvider;
+
+#[derive(Debug, Deserialize)]
+struct WhisperCliOutput {
+    result: Option<WhisperCliResult>,
+    #[serde(default)]
+    transcription: Vec<WhisperCliSegment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WhisperCliResult {
+    language: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WhisperCliSegment {
+    offsets: WhisperCliOffsets,
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WhisperCliOffsets {
+    from: u64,
+    to: u64,
+}
 
 impl AsrProvider for AliyunBailianProvider {
     fn id(&self) -> AsrProviderId {
@@ -597,7 +654,11 @@ fn submit_bailian_qwen_task(
 
     extract_string(&response, &["output", "task_id"])
         .map(ToString::to_string)
-        .ok_or_else(|| AsrError::Api(format!("阿里云百炼提交任务异常：未返回 task_id：{response}")))
+        .ok_or_else(|| {
+            AsrError::Api(format!(
+                "阿里云百炼提交任务异常：未返回 task_id：{response}"
+            ))
+        })
 }
 
 fn poll_bailian_task(
@@ -631,7 +692,9 @@ fn poll_bailian_task(
         match extract_string(&response, &["output", "task_status"]) {
             Some("SUCCEEDED") => {
                 return extract_bailian_transcription_url(&response).ok_or_else(|| {
-                    AsrError::Api(format!("阿里云百炼查询任务异常：任务成功但未返回 transcription_url：{response}"))
+                    AsrError::Api(format!(
+                        "阿里云百炼查询任务异常：任务成功但未返回 transcription_url：{response}"
+                    ))
                 });
             }
             Some("FAILED") => {
@@ -772,7 +835,9 @@ impl AsrProvider for GoogleChirp3Provider {
             return Err(AsrError::MissingGoogleProjectId);
         }
 
-        Err(AsrError::Api("Google Chirp3 识别服务尚未接入，目前为占位实现。".to_string()))
+        Err(AsrError::Api(
+            "Google Chirp3 识别服务尚未接入，目前为占位实现。".to_string(),
+        ))
     }
 }
 
@@ -941,12 +1006,389 @@ impl AsrProvider for LocalWhisperProvider {
         &self,
         request: &AsrTranscriptionRequest,
     ) -> Result<TranscriptDocument, AsrError> {
-        if request.config.local_whisper.model_path.trim().is_empty() {
+        let model_path = expand_home_path(request.config.local_whisper.model_path.trim());
+        if model_path.as_os_str().is_empty() {
             return Err(AsrError::MissingWhisperModelPath);
         }
+        if !model_path.is_file() {
+            return Err(AsrError::Api(format!(
+                "本地 Whisper 模型文件不存在：{}",
+                model_path.display()
+            )));
+        }
 
-        Err(AsrError::Api("本地 Whisper 识别服务尚未接入，目前为占位实现。".to_string()))
+        let audio_path = request.audio_path.trim();
+        let input_path = expand_home_path(audio_path);
+        if audio_path.starts_with("http://") || audio_path.starts_with("https://") {
+            return Err(AsrError::LocalProcessing(
+                "本地 Whisper 仅处理本机音视频文件。请先下载媒体文件，再使用本地离线 ASR。"
+                    .to_string(),
+            ));
+        }
+        if !input_path.is_file() {
+            return Err(AsrError::LocalProcessing(format!(
+                "本地音视频文件不存在：{}",
+                input_path.display()
+            )));
+        }
+
+        // 1. Find whisper-cli / main binary
+        let whisper_bin = find_whisper_cli(&model_path).ok_or_else(|| {
+            AsrError::Api("未在系统中找到 compiled whisper.cpp 命令行工具 (whisper-cli / main)。请确保已经编译并放置在常见路径。".to_string())
+        })?;
+
+        // 2. Prepare temporary directory and files
+        let temp_root =
+            crate::storage::ensure_output_subdir(request.output_dir.as_deref(), "temp_audio")
+                .map_err(|e| AsrError::Api(format!("无法创建临时目录: {e}")))?;
+        let task_id = uuid::Uuid::new_v4();
+        let temp_dir = temp_root.join(format!("whisper_{}", task_id));
+        std::fs::create_dir_all(&temp_dir)
+            .map_err(|e| AsrError::Api(format!("无法创建任务临时目录: {e}")))?;
+
+        // Ensure temp_dir is cleaned up on exit
+        let cleanup = || {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        };
+
+        // 3. Convert input audio to 16kHz mono WAV (required by whisper.cpp)
+        let temp_wav = temp_dir.join("input_16k.wav");
+        let mut ffmpeg_cmd = std::process::Command::new(crate::export::ffmpeg_path());
+        ffmpeg_cmd
+            .arg("-y")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-i")
+            .arg(&input_path)
+            .arg("-vn")
+            .arg("-acodec")
+            .arg("pcm_s16le")
+            .arg("-ar")
+            .arg("16000")
+            .arg("-ac")
+            .arg("1")
+            .arg(&temp_wav);
+
+        let ffmpeg_output = ffmpeg_cmd.output();
+        match ffmpeg_output {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let err_msg = String::from_utf8_lossy(&output.stderr).to_string();
+                cleanup();
+                return Err(AsrError::Api(format!("FFmpeg 音频转换失败: {err_msg}")));
+            }
+            Err(e) => {
+                cleanup();
+                return Err(AsrError::Api(format!(
+                    "启动 FFmpeg 失败，请确认系统已安装 ffmpeg: {e}"
+                )));
+            }
+        }
+
+        // 4. Determine language code
+        let whisper_lang = whisper_language(&request.config.source_language);
+
+        // 5. Run whisper-cli
+        let output_file_prefix = temp_dir.join("whisper_out");
+        let json_content = match run_whisper_cli_json(
+            &whisper_bin,
+            &model_path,
+            &temp_wav,
+            &output_file_prefix,
+            whisper_lang,
+        ) {
+            Ok(json_content) => json_content,
+            Err(error) => {
+                cleanup();
+                return Err(error);
+            }
+        };
+
+        // 6. Parse JSON result
+        let mut document = match parse_whisper_cli_output(request, &json_content) {
+            Ok(document) => document,
+            Err(error) => {
+                cleanup();
+                return Err(error);
+            }
+        };
+
+        if should_retry_local_whisper_auto_as_english(request, &document) {
+            let retry_output_prefix = temp_dir.join("whisper_out_en");
+            match run_whisper_cli_json(
+                &whisper_bin,
+                &model_path,
+                &temp_wav,
+                &retry_output_prefix,
+                "en",
+            )
+            .and_then(|retry_json| {
+                let mut retry_request = request.clone();
+                retry_request.config.source_language = SourceLanguageCode::EnUs;
+                parse_whisper_cli_output(&retry_request, &retry_json)
+            }) {
+                Ok(retry_document) => {
+                    document = retry_document;
+                }
+                Err(error) => {
+                    eprintln!("[ASR-Whisper] 自动语言检测异常后英文重试失败：{error}");
+                }
+            }
+        }
+
+        cleanup();
+        Ok(document)
     }
+}
+
+fn run_whisper_cli_json(
+    whisper_bin: &std::path::Path,
+    model_path: &std::path::Path,
+    temp_wav: &std::path::Path,
+    output_file_prefix: &std::path::Path,
+    whisper_lang: &str,
+) -> Result<String, AsrError> {
+    let mut whisper_cmd = std::process::Command::new(whisper_bin);
+    whisper_cmd
+        .arg("-m")
+        .arg(model_path)
+        .arg("-f")
+        .arg(temp_wav)
+        .arg("-l")
+        .arg(whisper_lang)
+        .arg("-ng")
+        .arg("-oj")
+        .arg("-of")
+        .arg(output_file_prefix)
+        .arg("-np");
+
+    let whisper_output = whisper_cmd.output();
+    match whisper_output {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let err_msg = if stderr.trim().is_empty() {
+                stdout.to_string()
+            } else {
+                stderr.to_string()
+            };
+            return Err(AsrError::Api(format!("Whisper 识别执行失败: {err_msg}")));
+        }
+        Err(error) => {
+            return Err(AsrError::Api(format!("启动 Whisper 识别失败: {error}")));
+        }
+    }
+
+    let json_path = output_file_prefix.with_extension("json");
+    if !json_path.exists() {
+        return Err(AsrError::Api("Whisper 识别结果文件不存在。".to_string()));
+    }
+
+    std::fs::read_to_string(&json_path)
+        .map_err(|error| AsrError::Api(format!("无法读取 Whisper 识别结果: {error}")))
+}
+
+fn expand_home_path(path: &str) -> std::path::PathBuf {
+    if path == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::PathBuf::from(home);
+        }
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::PathBuf::from(home).join(rest);
+        }
+    }
+
+    std::path::PathBuf::from(path)
+}
+
+fn whisper_language(source_language: &SourceLanguageCode) -> &'static str {
+    match source_language {
+        SourceLanguageCode::Auto => "auto",
+        SourceLanguageCode::EnUs => "en",
+        SourceLanguageCode::JaJp => "ja",
+        SourceLanguageCode::KoKr => "ko",
+        SourceLanguageCode::CmnHansCn => "zh",
+    }
+}
+
+fn source_language_from_whisper(language: &str) -> Option<SourceLanguageCode> {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "en" | "english" => Some(SourceLanguageCode::EnUs),
+        "ja" | "japanese" => Some(SourceLanguageCode::JaJp),
+        "ko" | "korean" => Some(SourceLanguageCode::KoKr),
+        "zh" | "chinese" | "mandarin" | "cmn" | "yue" => Some(SourceLanguageCode::CmnHansCn),
+        _ => None,
+    }
+}
+
+fn parse_whisper_cli_output(
+    request: &AsrTranscriptionRequest,
+    json_content: &str,
+) -> Result<TranscriptDocument, AsrError> {
+    let parsed_output: WhisperCliOutput = serde_json::from_str(json_content)
+        .map_err(|error| AsrError::Api(format!("解析 Whisper 识别 JSON 失败: {error}")))?;
+
+    let mut segments = Vec::new();
+    for (index, segment) in parsed_output.transcription.into_iter().enumerate() {
+        let text = segment.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        segments.push(TranscriptSegment {
+            id: format!("seg_{:03}", index + 1),
+            start_ms: segment.offsets.from,
+            end_ms: segment.offsets.to,
+            speaker_id: None,
+            text: text.to_string(),
+            confidence: None,
+        });
+    }
+
+    if segments.is_empty() {
+        return Err(AsrError::Api(
+            "Whisper 未返回有效转写分段。请确认音频中包含可识别的人声。".to_string(),
+        ));
+    }
+
+    let source_language = if request.config.source_language == SourceLanguageCode::Auto {
+        parsed_output
+            .result
+            .and_then(|result| result.language)
+            .and_then(|language| source_language_from_whisper(&language))
+            .unwrap_or(SourceLanguageCode::Auto)
+    } else {
+        request.config.source_language.clone()
+    };
+
+    Ok(TranscriptDocument {
+        source_language,
+        target_language: request.config.target_language.clone(),
+        provider: AsrProviderId::LocalWhisper,
+        segments,
+    })
+}
+
+fn should_retry_local_whisper_auto_as_english(
+    request: &AsrTranscriptionRequest,
+    document: &TranscriptDocument,
+) -> bool {
+    request.config.source_language == SourceLanguageCode::Auto
+        && document.source_language == SourceLanguageCode::Auto
+        && document
+            .segments
+            .iter()
+            .any(|segment| is_degenerate_whisper_auto_segment(segment))
+}
+
+fn is_degenerate_whisper_auto_segment(segment: &TranscriptSegment) -> bool {
+    let duration_ms = segment.end_ms.saturating_sub(segment.start_ms);
+    if duration_ms < 12_000 {
+        return false;
+    }
+
+    let meaningful_chars: Vec<char> = segment
+        .text
+        .chars()
+        .filter(|ch| is_meaningful_repetition_char(*ch))
+        .collect();
+    if meaningful_chars.len() < 20 {
+        return false;
+    }
+
+    let mut counts = std::collections::HashMap::new();
+    for ch in meaningful_chars.iter() {
+        *counts.entry(*ch).or_insert(0usize) += 1;
+    }
+
+    let unique_chars = counts.len();
+    let dominant_ratio =
+        counts.values().copied().max().unwrap_or_default() as f32 / meaningful_chars.len() as f32;
+
+    unique_chars <= 4 || (unique_chars <= 10 && dominant_ratio >= 0.55)
+}
+
+fn is_meaningful_repetition_char(ch: char) -> bool {
+    !ch.is_whitespace()
+        && !ch.is_ascii_punctuation()
+        && !matches!(
+            ch,
+            '，' | '。'
+                | '、'
+                | '！'
+                | '？'
+                | '；'
+                | '：'
+                | '“'
+                | '”'
+                | '‘'
+                | '’'
+                | '（'
+                | '）'
+                | '《'
+                | '》'
+                | '【'
+                | '】'
+                | '—'
+                | '…'
+        )
+}
+
+fn find_whisper_cli(model_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("WHISPER_CLI_PATH").map(std::path::PathBuf::from) {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let mut paths = Vec::new();
+    if let Some(models_dir) = model_path.parent() {
+        if let Some(install_dir) = models_dir.parent() {
+            paths.push(install_dir.join("whisper.cpp/build/bin/whisper-cli"));
+            paths.push(install_dir.join("whisper.cpp/build/bin/main"));
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME").map(std::path::PathBuf::from) {
+        paths.push(home.join("AI/whisper/whisper.cpp/build/bin/whisper-cli"));
+        paths.push(home.join("AI/whisper/whisper.cpp/build/bin/main"));
+        paths.push(home.join("whisper/whisper.cpp/build/bin/whisper-cli"));
+        paths.push(home.join("whisper/whisper.cpp/build/bin/main"));
+    }
+
+    paths.push(std::path::PathBuf::from("/opt/homebrew/bin/whisper-cli"));
+    paths.push(std::path::PathBuf::from("/usr/local/bin/whisper-cli"));
+
+    for path in paths {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("whisper-cli")
+        .output()
+    {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                return Some(std::path::PathBuf::from(path_str));
+            }
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("which").arg("main").output() {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() && path_str.contains("whisper") {
+                return Some(std::path::PathBuf::from(path_str));
+            }
+        }
+    }
+
+    None
 }
 
 fn parse_volc_flash_transcription_result(
@@ -1203,11 +1645,18 @@ pub fn upload_file_to_dashscope_oss(
     Ok(format!("oss://{}", key))
 }
 
-static ACTIVE_JOBS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>> = std::sync::OnceLock::new();
+static ACTIVE_JOBS: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    >,
+> = std::sync::OnceLock::new();
 
 pub fn register_job(job_id: String) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
     let cancel_token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    if let Ok(mut jobs) = ACTIVE_JOBS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new())).lock() {
+    if let Ok(mut jobs) = ACTIVE_JOBS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+    {
         jobs.insert(job_id, cancel_token.clone());
     }
     cancel_token
@@ -1320,6 +1769,104 @@ mod tests {
         .expect_err("missing model path should fail");
 
         assert!(matches!(error, AsrError::MissingWhisperModelPath));
+    }
+
+    #[test]
+    fn whisper_cli_json_maps_into_transcript_document() {
+        let mut config = default_asr_config();
+        config.provider = AsrProviderId::LocalWhisper;
+        config.source_language = SourceLanguageCode::Auto;
+        let json = r#"{
+            "result": { "language": "en" },
+            "transcription": [
+                {
+                    "offsets": { "from": 250, "to": 1750 },
+                    "text": " Hello from Whisper. "
+                },
+                {
+                    "offsets": { "from": 1800, "to": 2200 },
+                    "text": "   "
+                }
+            ]
+        }"#;
+
+        let document = parse_whisper_cli_output(
+            &AsrTranscriptionRequest {
+                job_id: None,
+                audio_path: "/tmp/audio.wav".to_string(),
+                output_dir: None,
+                config,
+            },
+            json,
+        )
+        .expect("whisper transcript");
+
+        assert_eq!(document.provider, AsrProviderId::LocalWhisper);
+        assert_eq!(document.source_language, SourceLanguageCode::EnUs);
+        assert_eq!(document.segments.len(), 1);
+        assert_eq!(document.segments[0].start_ms, 250);
+        assert_eq!(document.segments[0].end_ms, 1750);
+        assert_eq!(document.segments[0].text, "Hello from Whisper.");
+    }
+
+    #[test]
+    fn local_whisper_auto_retry_detects_repeated_gibberish_segment() {
+        let mut config = default_asr_config();
+        config.provider = AsrProviderId::LocalWhisper;
+        config.source_language = SourceLanguageCode::Auto;
+        let request = AsrTranscriptionRequest {
+            job_id: None,
+            audio_path: "/tmp/audio.wav".to_string(),
+            output_dir: None,
+            config,
+        };
+        let document = TranscriptDocument {
+            source_language: SourceLanguageCode::Auto,
+            target_language: TargetLanguageCode::ZhHansCn,
+            provider: AsrProviderId::LocalWhisper,
+            segments: vec![TranscriptSegment {
+                id: "seg_001".to_string(),
+                start_ms: 0,
+                end_ms: 30_000,
+                speaker_id: None,
+                text: "మాల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్ల్".to_string(),
+                confidence: None,
+            }],
+        };
+
+        assert!(should_retry_local_whisper_auto_as_english(
+            &request, &document
+        ));
+    }
+
+    #[test]
+    fn local_whisper_auto_retry_keeps_normal_transcript() {
+        let mut config = default_asr_config();
+        config.provider = AsrProviderId::LocalWhisper;
+        config.source_language = SourceLanguageCode::Auto;
+        let request = AsrTranscriptionRequest {
+            job_id: None,
+            audio_path: "/tmp/audio.wav".to_string(),
+            output_dir: None,
+            config,
+        };
+        let document = TranscriptDocument {
+            source_language: SourceLanguageCode::EnUs,
+            target_language: TargetLanguageCode::ZhHansCn,
+            provider: AsrProviderId::LocalWhisper,
+            segments: vec![TranscriptSegment {
+                id: "seg_001".to_string(),
+                start_ms: 0,
+                end_ms: 30_000,
+                speaker_id: None,
+                text: "Hello everyone, in this tutorial I am going to show you how to use local speech recognition.".to_string(),
+                confidence: None,
+            }],
+        };
+
+        assert!(!should_retry_local_whisper_auto_as_english(
+            &request, &document
+        ));
     }
 
     #[test]

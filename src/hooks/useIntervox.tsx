@@ -15,6 +15,7 @@ import type {
   CachedTranscript,
   CachedTranslation,
   CachedTts,
+  TtsProviderId,
 } from "../types/asr";
 
 export interface PlaybackHistoryItem {
@@ -189,6 +190,24 @@ interface IntervoxContextType {
   saveVolcCredential: () => Promise<void>;
   validateVolcProvider: () => Promise<void>;
 
+  // Deepseek Credential States
+  deepseekCredentialDraft: string;
+  setDeepseekCredentialDraft: (draft: string) => void;
+  deepseekStatus: CredentialValidationResult | null;
+  setDeepseekStatus: React.Dispatch<React.SetStateAction<CredentialValidationResult | null>>;
+  isSavingDeepseekCredential: boolean;
+  saveDeepseekCredential: () => Promise<void>;
+  validateDeepseekProvider: () => Promise<void>;
+
+  // Google Translate Credential States
+  googleTranslateCredentialDraft: string;
+  setGoogleTranslateCredentialDraft: (draft: string) => void;
+  googleTranslateStatus: CredentialValidationResult | null;
+  setGoogleTranslateStatus: React.Dispatch<React.SetStateAction<CredentialValidationResult | null>>;
+  isSavingGoogleTranslateCredential: boolean;
+  saveGoogleTranslateCredential: () => Promise<void>;
+  validateGoogleTranslateProvider: () => Promise<void>;
+
   // Actions
   saveCredential: () => Promise<void>;
   validateProvider: () => Promise<void>;
@@ -274,6 +293,20 @@ function outputPath(outputDir: string, fileName: string) {
   return baseDir ? `${baseDir}/${fileName}` : fileName;
 }
 
+function resolveTtsModel(
+  provider: TtsProviderId | undefined,
+  synthesisMode: "default" | "clone",
+  configuredModel?: string,
+) {
+  if (provider === "local_tts") {
+    return configuredModel?.trim() || "omnivoice:8";
+  }
+  if (provider === "volc_doubao") {
+    return synthesisMode === "clone" ? "seed-icl-2.0" : "seed-tts-2.0";
+  }
+  return synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash";
+}
+
 export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     try {
@@ -304,7 +337,12 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         if (parsed.volc_doubao?.resource_id === "volc.seedasr.auc") {
           parsed.volc_doubao.resource_id = "volc.bigasr.auc_turbo";
         }
-        return parsed;
+        return {
+          ...DEFAULT_ASR_CONFIG,
+          ...parsed,
+          translation: { ...DEFAULT_ASR_CONFIG.translation, ...parsed.translation },
+          tts: { ...DEFAULT_ASR_CONFIG.tts, ...parsed.tts },
+        };
       }
     } catch {}
     return DEFAULT_ASR_CONFIG;
@@ -325,6 +363,14 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [volcAppIdDraft, setVolcAppIdDraft] = useState(config.volc_doubao.app_id || "");
   const [volcStatus, setVolcStatus] = useState<CredentialValidationResult | null>(null);
   const [isSavingVolcCredential, setIsSavingVolcCredential] = useState(false);
+
+  const [deepseekCredentialDraft, setDeepseekCredentialDraft] = useState("");
+  const [deepseekStatus, setDeepseekStatus] = useState<CredentialValidationResult | null>(null);
+  const [isSavingDeepseekCredential, setIsSavingDeepseekCredential] = useState(false);
+
+  const [googleTranslateCredentialDraft, setGoogleTranslateCredentialDraft] = useState("");
+  const [googleTranslateStatus, setGoogleTranslateStatus] = useState<CredentialValidationResult | null>(null);
+  const [isSavingGoogleTranslateCredential, setIsSavingGoogleTranslateCredential] = useState(false);
 
   const [transcriptionStatus, setTranscriptionStatus] = useState<string | null>(null);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
@@ -367,19 +413,29 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     }
   }, [toast]);
 
-  const [synthesisMode, setSynthesisMode] = useState<"default" | "clone">("default");
-  const [ttsVoice, setTtsVoice] = useState("longxiaochun_v3");
-  const [translationModel, setTranslationModel] = useState("qwen-plus");
+  const synthesisMode = config.tts?.synthesis_mode || "default";
+  const setSynthesisMode = (mode: "default" | "clone") => {
+    setConfig((prev) => ({
+      ...prev,
+      tts: { ...prev.tts, synthesis_mode: mode }
+    }));
+  };
 
-  useEffect(() => {
-    if (config.provider === "volc_doubao") {
-      setTranslationModel("volc-speech-mt");
-      setTtsVoice("zh_female_vv_uranus_bigtts");
-    } else {
-      setTranslationModel("qwen-plus");
-      setTtsVoice("longxiaochun_v3");
-    }
-  }, [config.provider]);
+  const ttsVoice = config.tts?.voice || "longxiaochun_v3";
+  const setTtsVoice = (voice: string) => {
+    setConfig((prev) => ({
+      ...prev,
+      tts: { ...prev.tts, voice }
+    }));
+  };
+
+  const translationModel = config.translation?.model || "qwen-plus";
+  const setTranslationModel = (model: string) => {
+    setConfig((prev) => ({
+      ...prev,
+      translation: { ...prev.translation, model }
+    }));
+  };
   const [ttsRate, setTtsRate] = useState(1);
   const [outputDir, setOutputDir] = useState(() => {
     try {
@@ -521,11 +577,12 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       JSON.stringify({
         asr_cache_key: activeAsrCacheKey,
         target_language: config.target_language,
-        deployment: config.aliyun_bailian.deployment,
+        provider: config.translation?.provider || "aliyun_qwen",
+        deployment: config.translation?.deployment || "china_mainland",
         model: translationModel,
       }),
     );
-  }, [activeAsrCacheKey, config.aliyun_bailian.deployment, config.target_language, translationModel]);
+  }, [activeAsrCacheKey, config.translation?.provider, config.translation?.deployment, config.target_language, translationModel]);
 
   const [cachedTranscript, setCachedTranscript] = useState<CachedTranscript | null>(null);
   const [cachedTranslation, setCachedTranslation] = useState<CachedTranslation | null>(null);
@@ -847,6 +904,70 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const saveDeepseekCredential = async () => {
+    setIsSavingDeepseekCredential(true);
+    setDeepseekStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_save_credential",
+        { provider: "deepseek" as any, secret: deepseekCredentialDraft },
+        { ok: deepseekCredentialDraft.trim().length > 0, provider: "deepseek" as any, message: "DeepSeek 凭据已保存。" }
+      );
+      setDeepseekStatus(result);
+      if (result.ok) setDeepseekCredentialDraft("");
+    } catch (e: any) {
+      setDeepseekStatus({ ok: false, provider: "deepseek" as any, message: e.message || "保存失败。" });
+    } finally {
+      setIsSavingDeepseekCredential(false);
+    }
+  };
+
+  const validateDeepseekProvider = async () => {
+    setDeepseekStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_validate_credentials",
+        { provider: "deepseek" as any, config },
+        { ok: true, provider: "deepseek" as any, message: "DeepSeek 配置有效。" }
+      );
+      setDeepseekStatus(result);
+    } catch (e: any) {
+      setDeepseekStatus({ ok: false, provider: "deepseek" as any, message: e.message || "校验失败。" });
+    }
+  };
+
+  const saveGoogleTranslateCredential = async () => {
+    setIsSavingGoogleTranslateCredential(true);
+    setGoogleTranslateStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_save_credential",
+        { provider: "google_translate" as any, secret: googleTranslateCredentialDraft },
+        { ok: googleTranslateCredentialDraft.trim().length > 0, provider: "google_translate" as any, message: "Google 翻译凭据已保存。" }
+      );
+      setGoogleTranslateStatus(result);
+      if (result.ok) setGoogleTranslateCredentialDraft("");
+    } catch (e: any) {
+      setGoogleTranslateStatus({ ok: false, provider: "google_translate" as any, message: e.message || "保存失败。" });
+    } finally {
+      setIsSavingGoogleTranslateCredential(false);
+    }
+  };
+
+  const validateGoogleTranslateProvider = async () => {
+    setGoogleTranslateStatus(null);
+    try {
+      const result = await invokeOrFallback<CredentialValidationResult>(
+        "asr_validate_credentials",
+        { provider: "google_translate" as any, config },
+        { ok: true, provider: "google_translate" as any, message: "Google 翻译配置有效。" }
+      );
+      setGoogleTranslateStatus(result);
+    } catch (e: any) {
+      setGoogleTranslateStatus({ ok: false, provider: "google_translate" as any, message: e.message || "校验失败。" });
+    }
+  };
+
   useEffect(() => {
     // Validate credentials on initial load so the UI knows if keys exist
     validateProvider();
@@ -945,7 +1066,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    if (config.provider === "volc_doubao" && !translationModel.trim()) {
+    if (config.translation?.provider === "volc_speech_mt" && !translationModel.trim()) {
       setTranslationError("请选择火山机器翻译。");
       return;
     }
@@ -955,9 +1076,15 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
     setTranslationStatus(
       isVolcSpeechMtModel(translationModel)
         ? "正在调用火山引擎机器翻译..."
-        : config.provider === "volc_doubao"
+        : config.translation?.provider === "volc_speech_mt" || config.translation?.provider === "volc_ark"
           ? "正在调用火山翻译模型..."
-          : "正在调用百炼 Qwen 模型翻译..."
+          : config.translation?.provider === "deepseek"
+            ? "正在调用 DeepSeek 翻译中..."
+            : config.translation?.provider === "google_translate"
+              ? "正在调用 Google 翻译中..."
+              : config.translation?.provider === "local_llm"
+                ? "正在调用本地 LLM 翻译中..."
+                : "正在调用百炼 Qwen 模型翻译..."
     );
     setTranslationProgress(0.1);
 
@@ -967,14 +1094,16 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         {
           request: {
             transcript: { ...transcript, target_language: config.target_language },
+            provider: config.translation?.provider || "aliyun_qwen",
             model: translationModel,
-            deployment: config.aliyun_bailian.deployment,
+            deployment: config.translation?.deployment || "china_mainland",
+            local_endpoint: config.local_whisper?.translation_endpoint || "http://localhost:11434/v1",
           }
         },
         {
           source_language: String(transcript.source_language),
           target_language: config.target_language,
-          provider: isVolcSpeechMtModel(translationModel) ? "volc_speech_mt" : "aliyun_qwen",
+          provider: config.translation?.provider || "aliyun_qwen",
           segments: transcript.segments.map((segment) => ({
             id: segment.id,
             start_ms: segment.start_ms,
@@ -1020,25 +1149,34 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
     setIsSynthesizing(true);
     setTtsError(null);
-    setTtsStatus(config.provider === "volc_doubao" ? "调用豆包语音配音合成中..." : "调用 CosyVoice 配音合成中...");
+    setTtsStatus(
+      config.tts?.provider === "local_tts"
+        ? "调用本地语音合成中..."
+        : config.tts?.provider === "volc_doubao"
+          ? "调用豆包语音配音合成中..."
+          : "调用 CosyVoice 配音合成中..."
+    );
 
     try {
+      const ttsProvider = config.tts?.provider || "aliyun_cosyvoice";
+      const ttsModel = resolveTtsModel(ttsProvider, synthesisMode, config.tts?.model);
       const result = await invokeOrFallback<TtsDocument>(
         "synthesize_tts",
         {
           request: {
             translation,
-            model: config.provider === "volc_doubao"
-              ? (synthesisMode === "clone" ? "seed-icl-2.0" : "seed-tts-2.0")
-              : (synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash"),
+            provider: ttsProvider,
+            model: ttsModel,
             voice: synthesisMode === "clone" ? "" : ttsVoice,
-            deployment: config.aliyun_bailian.deployment,
+            deployment: config.translation?.deployment || config.aliyun_bailian?.deployment || "china_mainland",
             output_dir: outputDir.trim() || null,
             rate: ttsRate,
             pitch: 1,
             sample_rate: 24000,
             original_video_path: synthesisMode === "clone" ? activeMediaInput : null,
-            app_id: config.volc_doubao.app_id || null,
+            app_id: config.volc_doubao?.app_id || null,
+            tts_resource_id: config.tts?.tts_resource_id || null,
+            tts_endpoint: config.tts?.endpoint || null,
           }
         },
         {
@@ -1150,12 +1288,11 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       model: translationModel,
     });
     const translationCacheKey = hashString(translationSignature);
-    const ttsModel = configToUse.provider === "volc_doubao"
-      ? (synthesisMode === "clone" ? "seed-icl-2.0" : "seed-tts-2.0")
-      : (synthesisMode === "clone" ? "cosyvoice-v3-clone" : "cosyvoice-v3-flash");
+    const ttsProvider = configToUse.tts?.provider || "aliyun_cosyvoice";
+    const ttsModel = resolveTtsModel(ttsProvider, synthesisMode, configToUse.tts?.model);
     const ttsSignature = JSON.stringify({
       translation_cache_key: translationCacheKey,
-      provider: configToUse.provider,
+      provider: ttsProvider,
       synthesis_mode: synthesisMode,
       model: ttsModel,
       voice: synthesisMode === "clone" ? "" : ttsVoice,
@@ -1163,6 +1300,9 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       sample_rate: 24000,
       output_dir: outputDir.trim(),
       app_id: configToUse.volc_doubao.app_id,
+      tts_resource_id: configToUse.tts?.tts_resource_id || "",
+      tts_endpoint: configToUse.tts?.endpoint || "",
+      local_tts_preset_version: ttsProvider === "local_tts" ? 4 : 1,
     });
     const ttsCacheKey = hashString(ttsSignature);
 
@@ -1269,8 +1409,10 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
           {
             request: {
               transcript: { ...asrResult, target_language: configToUse.target_language },
+              provider: configToUse.translation?.provider || "aliyun_qwen",
               model: translationModel,
               deployment: configToUse.aliyun_bailian.deployment,
+              local_endpoint: configToUse.local_whisper?.translation_endpoint || "http://localhost:11434/v1",
             }
           },
           {
@@ -1333,6 +1475,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
           {
             request: {
               translation: translateResult,
+              provider: ttsProvider,
               model: ttsModel,
               voice: synthesisMode === "clone" ? "" : ttsVoice,
               deployment: configToUse.aliyun_bailian.deployment,
@@ -1340,8 +1483,10 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
               rate: ttsRate,
               pitch: 1,
               sample_rate: 24000,
-              original_video_path: mediaInput,
+              original_video_path: synthesisMode === "clone" ? mediaInput : null,
               app_id: configToUse.volc_doubao.app_id || null,
+              tts_resource_id: configToUse.tts?.tts_resource_id || null,
+              tts_endpoint: configToUse.tts?.endpoint || null,
             }
           },
           {
@@ -1562,6 +1707,20 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         isSavingVolcCredential,
         saveVolcCredential,
         validateVolcProvider,
+        deepseekCredentialDraft,
+        setDeepseekCredentialDraft,
+        deepseekStatus,
+        setDeepseekStatus,
+        isSavingDeepseekCredential,
+        saveDeepseekCredential,
+        validateDeepseekProvider,
+        googleTranslateCredentialDraft,
+        setGoogleTranslateCredentialDraft,
+        googleTranslateStatus,
+        setGoogleTranslateStatus,
+        isSavingGoogleTranslateCredential,
+        saveGoogleTranslateCredential,
+        validateGoogleTranslateProvider,
         startTranscription,
         startTranslation,
         startTts,

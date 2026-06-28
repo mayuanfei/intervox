@@ -36,7 +36,7 @@ pub fn register_playback_file(path: &Path) -> Result<String, String> {
         .as_ref()
         .map_err(Clone::clone)?;
     let token = Uuid::new_v4().simple().to_string();
-    
+
     let mut sources = server
         .sources
         .lock()
@@ -69,7 +69,7 @@ pub fn register_playback_directory(path: &Path, entrypoint: &str) -> Result<Stri
         .as_ref()
         .map_err(Clone::clone)?;
     let token = Uuid::new_v4().simple().to_string();
-    
+
     let mut sources = server
         .sources
         .lock()

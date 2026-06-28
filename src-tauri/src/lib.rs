@@ -353,6 +353,147 @@ async fn prepare_video_for_playback(
     .map_err(|error| format!("转码任务异常终止：{error}"))?
 }
 
+/// Generate a thumbnail image from a video file using ffmpeg.
+/// Returns the absolute path to the generated JPEG thumbnail.
+#[tauri::command]
+async fn generate_video_thumbnail(input_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let input = std::path::Path::new(&input_path);
+        if !input.exists() {
+            return Err(format!("文件不存在：{input_path}"));
+        }
+
+        // Put the thumbnail beside the original or in a temp dir
+        let thumb_dir = std::env::temp_dir().join("intervox_thumbnails");
+        std::fs::create_dir_all(&thumb_dir).map_err(|e| format!("无法创建缩略图目录：{e}"))?;
+
+        // Use a hash of the path to avoid collisions
+        let hash = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            input_path.hash(&mut hasher);
+            hasher.finish()
+        };
+        let thumb_path = thumb_dir.join(format!("thumb_{hash:016x}.jpg"));
+
+        // If thumbnail already exists and is recent (within 60s), reuse it
+        if thumb_path.exists() {
+            if let Ok(meta) = thumb_path.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if modified.elapsed().unwrap_or_default().as_secs() < 60 {
+                        return Ok(thumb_path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+
+        let ffmpeg = export::ffmpeg_path();
+        let output = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-ss", "1.5", "-i"])
+            .arg(&input_path)
+            .args(["-frames:v", "1", "-q:v", "2"])
+            .arg(thumb_path.as_os_str())
+            .output()
+            .map_err(|e| format!("无法启动 ffmpeg 生成缩略图：{e}"))?;
+
+        if !output.status.success() {
+            // Retry at 0s in case the video is shorter than 1.5s
+            let retry_output = std::process::Command::new(&ffmpeg)
+                .args(["-y", "-ss", "0", "-i"])
+                .arg(&input_path)
+                .args(["-frames:v", "1", "-q:v", "2"])
+                .arg(thumb_path.as_os_str())
+                .output()
+                .map_err(|e| format!("ffmpeg 缩略图重试失败：{e}"))?;
+
+            if !retry_output.status.success() {
+                let stderr = String::from_utf8_lossy(&retry_output.stderr);
+                return Err(format!("ffmpeg 无法提取视频帧：{stderr}"));
+            }
+        }
+
+        if !thumb_path.exists() || thumb_path.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
+            return Err("ffmpeg 未能生成有效的缩略图文件。".to_string());
+        }
+
+        Ok(thumb_path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("缩略图生成任务异常终止：{e}"))?
+}
+
+/// Auto-detect whisper model files in common locations.
+/// Returns a list of absolute paths to found ggml-*.bin files.
+#[tauri::command]
+fn detect_whisper_models() -> Vec<String> {
+    let mut found = Vec::new();
+
+    // Common paths to search for whisper models
+    let mut search_dirs: Vec<std::path::PathBuf> = vec![];
+
+    // Determine home directory cross-platform
+    let home_dir = {
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var("USERPROFILE")
+                .ok()
+                .map(std::path::PathBuf::from)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::var("HOME").ok().map(std::path::PathBuf::from)
+        }
+    };
+
+    // ~/.local/share/whisper-models/ (common for whisper.cpp)
+    if let Some(home) = home_dir {
+        search_dirs.push(home.join(".local/share/whisper-models"));
+        search_dirs.push(home.join(".cache/whisper"));
+        search_dirs.push(home.join("whisper/models"));
+        search_dirs.push(home.join("AI/whisper/models"));
+        search_dirs.push(home.join(".whisper"));
+    }
+
+    // Homebrew paths on macOS
+    search_dirs.push(std::path::PathBuf::from("/usr/local/share/whisper-models"));
+    search_dirs.push(std::path::PathBuf::from(
+        "/opt/homebrew/share/whisper-models",
+    ));
+
+    for dir in &search_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("ggml-") && name.ends_with(".bin") {
+                            found.push(path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Open a file dialog to pick a whisper model (.bin) file.
+#[tauri::command]
+fn select_whisper_model_file() -> Result<Option<String>, String> {
+    let file = rfd::FileDialog::new()
+        .add_filter("Whisper Model", &["bin"])
+        .set_title("选择 Whisper 模型文件 (ggml-*.bin)")
+        .pick_file();
+    Ok(file.map(|p| p.to_string_lossy().to_string()))
+}
+
 #[tauri::command]
 fn select_local_file() -> Result<Option<String>, String> {
     let file = rfd::FileDialog::new()
@@ -457,6 +598,9 @@ pub fn run() {
             download_page_with_yt_dlp,
             export_dubbed_video,
             prepare_video_for_playback,
+            generate_video_thumbnail,
+            detect_whisper_models,
+            select_whisper_model_file,
             select_local_file,
             select_local_directory,
             reveal_in_finder,

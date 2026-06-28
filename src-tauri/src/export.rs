@@ -58,6 +58,12 @@ pub struct SubtitleOptions {
     pub translation: TranslationDocument,
 }
 
+impl SubtitleOptions {
+    fn has_visible_lines(&self) -> bool {
+        self.show_english || self.show_target_language
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ExportResult {
     pub voiceover_path: String,
@@ -91,6 +97,8 @@ pub enum ExportError {
     EmptyTts,
     #[error("找不到 ffmpeg。请先安装 FFmpeg，或设置 FFMPEG_PATH 后再导出。")]
     MissingFfmpeg,
+    #[error("当前 FFmpeg 不支持硬字幕烧录（缺少 subtitles/libass 滤镜）。请安装带 libass 的 FFmpeg，或设置 FFMPEG_PATH 指向支持 subtitles 滤镜的 ffmpeg。")]
+    MissingSubtitleRenderer,
     #[error("导出失败：{0}")]
     CommandFailed(String),
     #[error("写入导出文件失败：{0}")]
@@ -116,6 +124,13 @@ where
         return Err(ExportError::EmptyTts);
     }
     ensure_ffmpeg()?;
+    if request
+        .subtitles
+        .as_ref()
+        .is_some_and(SubtitleOptions::has_visible_lines)
+    {
+        ensure_hard_subtitle_support()?;
+    }
 
     let output_dir = resolve_output_dir(request.output_dir.as_deref())?;
     fs::create_dir_all(&output_dir)?;
@@ -198,9 +213,7 @@ fn write_subtitles(
     timings: &[SubtitleTiming],
     output_dir: &Path,
 ) -> Result<Option<PathBuf>, ExportError> {
-    let Some(options) =
-        options.filter(|options| options.show_english || options.show_target_language)
-    else {
+    let Some(options) = options.filter(|options| options.has_visible_lines()) else {
         return Ok(None);
     };
 
@@ -278,6 +291,32 @@ fn ensure_ffmpeg() -> Result<(), ExportError> {
         })
 }
 
+fn ensure_hard_subtitle_support() -> Result<(), ExportError> {
+    if ffmpeg_supports_filter("subtitles") {
+        Ok(())
+    } else {
+        Err(ExportError::MissingSubtitleRenderer)
+    }
+}
+
+fn ffmpeg_supports_filter(filter_name: &str) -> bool {
+    ffmpeg_command()
+        .arg("-hide_banner")
+        .arg("-filters")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| ffmpeg_filters_contain(&String::from_utf8_lossy(&output.stdout), filter_name))
+        .unwrap_or(false)
+}
+
+fn ffmpeg_filters_contain(filters: &str, filter_name: &str) -> bool {
+    filters
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .any(|name| name == filter_name)
+}
+
 fn ffmpeg_command() -> Command {
     Command::new(ffmpeg_path())
 }
@@ -298,7 +337,9 @@ pub fn ffmpeg_path() -> PathBuf {
     }
 
     [
+        "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg",
         "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/opt/ffmpeg-full/bin/ffmpeg",
         "/usr/local/bin/ffmpeg",
         "/usr/bin/ffmpeg",
     ]
@@ -675,12 +716,9 @@ fn mux_video(
 ) -> Result<(), ExportError> {
     let original_audio_volume = clamp_volume(original_audio_volume);
     let voiceover_volume = clamp_volume(voiceover_volume);
-    let original_audio_volume = if replace_original_audio {
-        0.0
-    } else {
-        original_audio_volume
-    };
+    let original_filter = original_audio_filter(replace_original_audio, original_audio_volume);
     let transcode_video = should_transcode_video_for_mp4(media_url);
+    let burn_subtitles = subtitle_path.is_some();
     let mut command = ffmpeg_command();
     command
         .arg("-y")
@@ -688,32 +726,28 @@ fn mux_video(
         .arg(media_url)
         .arg("-i")
         .arg(voiceover_path);
-    if let Some(subtitle_path) = subtitle_path {
-        command.arg("-i").arg(subtitle_path);
-    }
-    command.arg("-map").arg("0:v:0");
 
+    let mut filters = vec![
+        original_filter,
+        format!(
+            "[1:a:0]volume={voiceover_volume:.2}[dub];\
+             [orig][dub]amix=inputs=2:duration=first:normalize=0[aout]"
+        ),
+    ];
+    if let Some(subtitle_path) = subtitle_path {
+        filters.push(hard_subtitle_video_filter(subtitle_path));
+    }
     command
         .arg("-filter_complex")
-        .arg(format!(
-            "[0:a:0]volume={original_audio_volume:.2}[orig];\
-             [1:a:0]volume={voiceover_volume:.2}[dub];\
-             [orig][dub]amix=inputs=2:duration=first:normalize=0[aout]"
-        ))
+        .arg(filters.join(";"))
+        .arg("-map")
+        .arg(if burn_subtitles { "[vout]" } else { "0:v:0" })
         .arg("-map")
         .arg("[aout]");
 
-    if subtitle_path.is_some() {
-        command
-            .arg("-map")
-            .arg("2:s:0")
-            .arg("-c:s")
-            .arg("mov_text")
-            .arg("-disposition:s:0")
-            .arg("default");
-    }
-
-    if transcode_video {
+    if burn_subtitles {
+        append_h264_video_encoding_args(&mut command, &playback_h264_encoder());
+    } else if transcode_video {
         append_h264_video_args(&mut command, &playback_h264_encoder());
     } else {
         command.arg("-c:v").arg("copy");
@@ -727,6 +761,40 @@ fn mux_video(
         .arg(video_path);
 
     run_command_with_progress(&mut command, total_ms, on_progress)
+}
+
+fn hard_subtitle_video_filter(subtitle_path: &Path) -> String {
+    format!(
+        "[0:v:0]scale='min(1920,iw)':-2,subtitles={}:force_style='{}'[vout]",
+        ffmpeg_filter_filename(subtitle_path),
+        HARD_SUBTITLE_FORCE_STYLE
+    )
+}
+
+const HARD_SUBTITLE_FORCE_STYLE: &str = "FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1.5,Shadow=0,Alignment=2,MarginV=28";
+
+fn ffmpeg_filter_filename(path: &Path) -> String {
+    format!(
+        "filename='{}'",
+        escape_ffmpeg_single_quoted_filter_value(&path.to_string_lossy())
+    )
+}
+
+fn escape_ffmpeg_single_quoted_filter_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace(':', "\\:")
+}
+
+fn original_audio_filter(replace_original_audio: bool, original_audio_volume: f32) -> String {
+    let original_audio_volume = clamp_volume(original_audio_volume);
+    let volume = if replace_original_audio {
+        0.0
+    } else {
+        original_audio_volume
+    };
+    format!("[0:a:0]volume={volume:.2}[orig]")
 }
 
 fn should_transcode_video_for_mp4(media_url: &str) -> bool {
@@ -1391,11 +1459,14 @@ fn hls_playback_conversion_command(input_path: &str, stream_dir: &Path, encoder:
 }
 
 fn append_h264_video_args(command: &mut Command, encoder: &str) {
+    append_h264_video_encoding_args(command, encoder);
+    command.arg("-vf").arg("scale='min(1920,iw)':-2");
+}
+
+fn append_h264_video_encoding_args(command: &mut Command, encoder: &str) {
     command
         .arg("-c:v")
         .arg(encoder)
-        .arg("-vf")
-        .arg("scale='min(1920,iw)':-2")
         .arg("-pix_fmt")
         .arg("yuv420p");
     if encoder == "h264_videotoolbox" {
@@ -1522,6 +1593,49 @@ mod tests {
         assert_eq!(clamp_volume(-1.0), 0.0);
         assert_eq!(clamp_volume(3.0), 2.0);
         assert_eq!(clamp_volume(f32::NAN), 1.0);
+    }
+
+    #[test]
+    fn original_audio_filter_mutes_original_audio_when_replacing() {
+        let filter = original_audio_filter(true, 0.25);
+
+        assert_eq!(filter, "[0:a:0]volume=0.00[orig]");
+    }
+
+    #[test]
+    fn original_audio_filter_uses_flat_volume_without_replace() {
+        let filter = original_audio_filter(false, 0.25);
+
+        assert_eq!(filter, "[0:a:0]volume=0.25[orig]");
+    }
+
+    #[test]
+    fn hard_subtitle_filter_burns_subtitle_file_into_video_stream() {
+        let filter = hard_subtitle_video_filter(Path::new("/tmp/intervox exports/subtitles.srt"));
+
+        assert!(filter.starts_with("[0:v:0]scale='min(1920,iw)':-2,subtitles="));
+        assert!(filter.contains("filename='/tmp/intervox exports/subtitles.srt'"));
+        assert!(filter.contains("force_style='FontSize=20"));
+        assert!(filter.ends_with("[vout]"));
+    }
+
+    #[test]
+    fn ffmpeg_subtitle_filter_filename_escapes_special_characters() {
+        let filename = ffmpeg_filter_filename(Path::new("/tmp/a:b's/subtitles.srt"));
+
+        assert_eq!(filename, "filename='/tmp/a\\:b\\'s/subtitles.srt'");
+    }
+
+    #[test]
+    fn ffmpeg_filter_parser_detects_subtitles_filter_by_name() {
+        let filters = "\
+Filters:
+ .. scale             V->V       Scale the input video size
+ T.C subtitles        V->V       Render text subtitles onto input video
+ .. asubtitles        V->V       Render subtitles onto input video";
+
+        assert!(ffmpeg_filters_contain(filters, "subtitles"));
+        assert!(!ffmpeg_filters_contain(filters, "title"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ use crate::asr::{AsrProviderId, BailianDeployment, TargetLanguageCode};
 use crate::credentials::{CredentialError, CredentialStore};
 use crate::translation::TranslationDocument;
 use base64::Engine as _;
+use reqwest::blocking::multipart::{Form, Part};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -14,10 +15,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const DEFAULT_VOLC_TTS_VOICE: &str = "zh_female_vv_uranus_bigtts";
+const DEFAULT_OMNIVOICE_ENDPOINT: &str = "http://127.0.0.1:3900";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TtsRequest {
     pub translation: TranslationDocument,
+    pub provider: String,
     pub model: String,
     pub voice: String,
     pub deployment: BailianDeployment,
@@ -28,6 +31,7 @@ pub struct TtsRequest {
     pub original_video_path: Option<String>,
     pub app_id: Option<String>,
     pub tts_resource_id: Option<String>,
+    pub tts_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -104,10 +108,15 @@ where
         .count();
     report_tts_progress(&mut on_progress, "started", 0, total_segments);
 
-    let model_name = request.model.trim();
+    let provider = request.provider.trim();
 
-    // Route to Volcengine Doubao if the model matches
-    if is_volc_model(model_name) {
+    // Route to local TTS if specified
+    if provider == "local_tts" {
+        return synthesize_local_tts(request, &mut on_progress, total_segments);
+    }
+
+    // Route to Volcengine Doubao if the model or provider matches
+    if provider == "volc_doubao" || is_volc_model(request.model.trim()) {
         return synthesize_volc(request, credentials, &mut on_progress, total_segments);
     }
 
@@ -305,6 +314,10 @@ where
     let is_clone = model_name.contains("icl") || model_name.contains("clone");
 
     let voice_type = if is_clone {
+        let clone_resource_id = normalize_volc_tts_resource_id(
+            request.tts_resource_id.as_deref(),
+            default_volc_tts_resource_id(true, ""),
+        );
         // Voice cloning path
         let video_path = request.original_video_path.as_deref().ok_or_else(|| {
             TtsError::Api("进行火山引擎声音克隆时必须提供原视频路径。".to_string())
@@ -313,7 +326,7 @@ where
         let temp_slice = extract_slice_to_temp(video_path, request.output_dir.as_deref())
             .map_err(|e| TtsError::Api(format!("提取克隆音源切片失败：{e}")))?;
 
-        enroll_volc_voice(&client, &api_key, &app_id, &temp_slice)?
+        enroll_volc_voice(&client, &api_key, &app_id, &clone_resource_id, &temp_slice)?
     } else {
         // Standard synthesis: use the voice preset or default
         let voice_type = normalize_volc_tts_voice(&request.voice);
@@ -386,6 +399,321 @@ where
         voice: voice_type,
         segments,
     })
+}
+
+fn synthesize_local_tts<F>(
+    request: TtsRequest,
+    on_progress: &mut F,
+    total_segments: usize,
+) -> Result<TtsDocument, TtsError>
+where
+    F: FnMut(TtsProgress),
+{
+    let output_dir = resolve_output_dir(
+        request.output_dir.as_deref(),
+        &local_tts_cache_key(&request),
+    )?;
+    fs::create_dir_all(&output_dir)?;
+
+    let endpoint = omnivoice_generate_url(request.tts_endpoint.as_deref());
+    let client = Client::builder()
+        .timeout(Duration::from_secs(900))
+        .build()?;
+
+    let clone_reference = if request.original_video_path.is_some() {
+        Some(
+            extract_slice_to_temp(
+                request.original_video_path.as_deref().unwrap_or_default(),
+                request.output_dir.as_deref(),
+            )
+            .map_err(|e| TtsError::Api(format!("提取本地声音克隆音源失败：{e}")))?,
+        )
+    } else {
+        None
+    };
+    let ref_text = reference_text_for_clone(&request.translation);
+    let engine = local_tts_engine(&request.model);
+    let num_step = local_tts_num_step(&request.model);
+    let language = omnivoice_language(&request.translation.target_language);
+    let voice_instruct = omnivoice_voice_instruct(&request.voice);
+    let voice_seed = omnivoice_voice_seed(&request.model, &request.voice, language);
+
+    let mut segments = Vec::new();
+    for (index, segment) in request.translation.segments.iter().enumerate() {
+        let text = segment.translated_text.trim();
+        if text.is_empty() {
+            eprintln!("[TTS-Local] 跳过空文本段 {} ({})", index, segment.id);
+            continue;
+        }
+
+        let audio_path =
+            output_dir.join(format!("{index:04}_{}.wav", sanitize_file_id(&segment.id)));
+
+        if has_reusable_audio_file(&audio_path) {
+            eprintln!("[TTS-Local] 复用已生成音频段 {} ({})", index, segment.id);
+        } else {
+            synthesize_omnivoice_segment(
+                &client,
+                &endpoint,
+                &engine,
+                num_step,
+                language,
+                text,
+                omnivoice_target_duration(segment.start_ms, segment.end_ms, text),
+                clone_reference.as_deref(),
+                ref_text.as_deref(),
+                voice_instruct,
+                voice_seed,
+                request.rate,
+                &audio_path,
+            )?;
+        }
+
+        segments.push(TtsSegment {
+            id: segment.id.clone(),
+            start_ms: segment.start_ms,
+            end_ms: segment.end_ms,
+            speaker_id: segment.speaker_id.clone(),
+            text: text.to_string(),
+            audio_url: String::new(),
+            audio_path: audio_path.to_string_lossy().to_string(),
+        });
+
+        report_tts_progress(
+            on_progress,
+            "segment_completed",
+            segments.len(),
+            total_segments,
+        );
+    }
+
+    if segments.is_empty() {
+        return Err(TtsError::EmptyTranslation);
+    }
+
+    report_tts_progress(on_progress, "completed", segments.len(), total_segments);
+
+    Ok(TtsDocument {
+        target_language: request.translation.target_language,
+        provider: "local_tts".to_string(),
+        model: request.model.clone(),
+        voice: request.voice.clone(),
+        segments,
+    })
+}
+
+fn synthesize_omnivoice_segment(
+    client: &Client,
+    endpoint: &str,
+    engine: &str,
+    num_step: u32,
+    language: &str,
+    text: &str,
+    duration_seconds: Option<f32>,
+    ref_audio_path: Option<&std::path::Path>,
+    ref_text: Option<&str>,
+    voice_instruct: Option<&str>,
+    voice_seed: u32,
+    speed: f32,
+    output_path: &std::path::Path,
+) -> Result<(), TtsError> {
+    let mut form = Form::new()
+        .text("text", text.to_string())
+        .text("language", language.to_string())
+        .text("engine", engine.to_string())
+        .text("num_step", num_step.to_string())
+        .text("effect_preset", "broadcast".to_string())
+        .text("seed", voice_seed.to_string())
+        .text("speed", normalized_tts_speed(speed).to_string());
+
+    if let Some(duration_seconds) = duration_seconds {
+        form = form.text("duration", format!("{duration_seconds:.2}"));
+    }
+
+    if let Some(path) = ref_audio_path {
+        let bytes = fs::read(path)?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("reference.wav")
+            .to_string();
+        let part = Part::bytes(bytes)
+            .file_name(file_name)
+            .mime_str(audio_mime_for_path(path))?;
+        form = form.part("ref_audio", part);
+    }
+
+    if let Some(ref_text) = ref_text.map(str::trim).filter(|value| !value.is_empty()) {
+        form = form.text("ref_text", ref_text.to_string());
+    }
+
+    if let Some(instruct) = voice_instruct
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        form = form.text("instruct", instruct.to_string());
+    }
+
+    let response = client.post(endpoint).multipart(form).send()?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(TtsError::Api(format!(
+            "本地 OmniVoice 语音合成失败 (HTTP {}): {}",
+            status,
+            summarize_response(&body)
+        )));
+    }
+
+    let audio_bytes = response.bytes()?;
+    if audio_bytes.len() <= 44 {
+        return Err(TtsError::Api(
+            "本地 OmniVoice 返回了空音频，请检查后端日志。".to_string(),
+        ));
+    }
+    fs::write(output_path, audio_bytes.as_ref())?;
+    Ok(())
+}
+
+fn omnivoice_target_duration(start_ms: u64, end_ms: u64, text: &str) -> Option<f32> {
+    let slot_ms = end_ms.saturating_sub(start_ms);
+    let text_chars = text.chars().filter(|ch| !ch.is_whitespace()).count();
+
+    if text_chars < 8 || !(700..=14_000).contains(&slot_ms) {
+        return None;
+    }
+
+    Some((slot_ms.saturating_sub(120).max(700) as f32) / 1000.0)
+}
+
+fn omnivoice_voice_instruct(voice: &str) -> Option<&str> {
+    let value = voice.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("default") {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn omnivoice_voice_seed(model: &str, voice: &str, language: &str) -> u32 {
+    let mut hasher = DefaultHasher::new();
+    "omnivoice-voice-seed-v1".hash(&mut hasher);
+    model.trim().hash(&mut hasher);
+    voice.trim().hash(&mut hasher);
+    language.hash(&mut hasher);
+    ((hasher.finish() & 0x7fff_ffff) as u32).max(1)
+}
+
+fn omnivoice_generate_url(endpoint: Option<&str>) -> String {
+    let base = endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_OMNIVOICE_ENDPOINT)
+        .trim_end_matches('/');
+    if base.ends_with("/generate") {
+        base.to_string()
+    } else {
+        format!("{base}/generate")
+    }
+}
+
+fn local_tts_engine(model: &str) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return "omnivoice".to_string();
+    }
+    trimmed
+        .split(':')
+        .next()
+        .unwrap_or("omnivoice")
+        .trim()
+        .to_lowercase()
+}
+
+fn local_tts_num_step(model: &str) -> u32 {
+    model
+        .trim()
+        .split(':')
+        .nth(1)
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .map(|value| value.clamp(1, 32))
+        .unwrap_or(8)
+}
+
+fn omnivoice_language(target_language: &TargetLanguageCode) -> &'static str {
+    match target_language {
+        TargetLanguageCode::ZhHansCn => "Chinese",
+        TargetLanguageCode::EnUs => "English",
+        TargetLanguageCode::JaJp => "Japanese",
+        TargetLanguageCode::KoKr => "Korean",
+        TargetLanguageCode::EsEs => "Spanish",
+        TargetLanguageCode::FrFr => "French",
+        TargetLanguageCode::DeDe => "German",
+    }
+}
+
+fn reference_text_for_clone(translation: &TranslationDocument) -> Option<String> {
+    let window_text = collect_reference_text(
+        translation
+            .segments
+            .iter()
+            .filter(|segment| segment.end_ms >= 5_000 && segment.start_ms <= 20_000)
+            .map(|segment| segment.source_text.as_str()),
+    );
+    if window_text.is_some() {
+        return window_text;
+    }
+    collect_reference_text(
+        translation
+            .segments
+            .iter()
+            .map(|segment| segment.source_text.as_str()),
+    )
+}
+
+fn collect_reference_text<'a>(texts: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut collected = String::new();
+    for text in texts {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !collected.is_empty() {
+            collected.push(' ');
+        }
+        collected.push_str(trimmed);
+        if collected.chars().count() >= 280 {
+            break;
+        }
+    }
+    let trimmed = collected.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.chars().take(320).collect())
+    }
+}
+
+fn normalized_tts_speed(speed: f32) -> f32 {
+    if speed.is_finite() {
+        speed.clamp(0.5, 2.0)
+    } else {
+        1.0
+    }
+}
+
+fn audio_mime_for_path(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp3") => "audio/mpeg",
+        Some("m4a") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        _ => "audio/wav",
+    }
 }
 
 fn report_tts_progress<F>(
@@ -589,6 +917,7 @@ fn enroll_volc_voice(
     client: &Client,
     api_key: &str,
     app_id: &str,
+    resource_id: &str,
     audio_path: &std::path::Path,
 ) -> Result<String, TtsError> {
     let audio_bytes = fs::read(audio_path)?;
@@ -614,16 +943,23 @@ fn enroll_volc_voice(
         .post("https://openspeech.bytedance.com/api/v1/mega_tts/audio/upload")
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer;{api_key}"))
-        .header("Resource-Id", "volc_mega_tts_resource")
+        .header("Resource-Id", resource_id)
         .json(&payload)
         .send()?;
 
     if !response.status().is_success() {
         let status = response.status();
         let err_text = response.text().unwrap_or_default();
+        let hint = if status.as_u16() == 401 && err_text.contains("requested grant") {
+            format!(
+                "；当前请求的声音复刻 Resource-Id 为 {resource_id}，请确认火山控制台已开通对应 Seed-ICL/MegaTTS 资源授权，且 App ID 与 API Key 属于同一应用"
+            )
+        } else {
+            String::new()
+        };
         return Err(TtsError::Api(format!(
-            "火山引擎声音复刻上传失败 (HTTP {}): {}",
-            status, err_text
+            "火山引擎声音复刻上传失败 (HTTP {}): {}{}",
+            status, err_text, hint
         )));
     }
 
@@ -900,6 +1236,15 @@ fn tts_cache_key(request: &TtsRequest) -> String {
     format!("{:x}", hasher.finish())
 }
 
+fn local_tts_cache_key(request: &TtsRequest) -> String {
+    let mut hasher = DefaultHasher::new();
+    "local-tts-seeded-voice-v1".hash(&mut hasher);
+    serde_json::to_string(request)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
 fn has_reusable_audio_file(path: &std::path::Path) -> bool {
     fs::metadata(path)
         .map(|metadata| metadata.is_file() && metadata.len() > 44)
@@ -1033,6 +1378,102 @@ mod tests {
         assert_eq!(
             normalize_volc_tts_resource_id(Some(" "), "seed-tts-2.0"),
             "seed-tts-2.0"
+        );
+    }
+
+    #[test]
+    fn builds_omnivoice_generate_url_from_base_endpoint() {
+        assert_eq!(
+            omnivoice_generate_url(Some("http://127.0.0.1:3900")),
+            "http://127.0.0.1:3900/generate"
+        );
+        assert_eq!(
+            omnivoice_generate_url(Some("http://127.0.0.1:3900/generate")),
+            "http://127.0.0.1:3900/generate"
+        );
+    }
+
+    #[test]
+    fn parses_local_tts_model_engine_and_steps() {
+        assert_eq!(local_tts_engine("omnivoice:12"), "omnivoice");
+        assert_eq!(local_tts_num_step("omnivoice:12"), 12);
+        assert_eq!(local_tts_num_step("omnivoice"), 8);
+    }
+
+    #[test]
+    fn omnivoice_duration_targets_normal_speech_slots_only() {
+        assert_eq!(omnivoice_target_duration(0, 30_000, "嘘"), None);
+        assert_eq!(omnivoice_target_duration(0, 5_000, "短"), None);
+        assert_eq!(
+            omnivoice_target_duration(0, 20_000, "这是一个正常长度的句子"),
+            None
+        );
+
+        let duration = omnivoice_target_duration(10_000, 16_000, "这是一个正常长度的句子")
+            .expect("normal speech slot should get a target duration");
+        assert!((duration - 5.88).abs() < 0.01);
+    }
+
+    #[test]
+    fn maps_omnivoice_default_voice_to_no_instruct() {
+        assert_eq!(omnivoice_voice_instruct("default"), None);
+        assert_eq!(omnivoice_voice_instruct(" "), None);
+        assert_eq!(
+            omnivoice_voice_instruct("female, middle-aged, low pitch"),
+            Some("female, middle-aged, low pitch")
+        );
+    }
+
+    #[test]
+    fn omnivoice_voice_seed_is_stable_per_voice() {
+        let seed = omnivoice_voice_seed(
+            "omnivoice:8",
+            "male, middle-aged, moderate pitch",
+            "Chinese",
+        );
+        assert_eq!(
+            seed,
+            omnivoice_voice_seed(
+                "omnivoice:8",
+                "male, middle-aged, moderate pitch",
+                "Chinese"
+            )
+        );
+        assert_ne!(
+            seed,
+            omnivoice_voice_seed("omnivoice:8", "female, middle-aged, low pitch", "Chinese")
+        );
+    }
+
+    #[test]
+    fn builds_reference_text_from_clone_window() {
+        let translation = TranslationDocument {
+            source_language: "en-US".to_string(),
+            target_language: TargetLanguageCode::ZhHansCn,
+            provider: "aliyun_qwen".to_string(),
+            segments: vec![
+                crate::translation::TranslationSegment {
+                    id: "seg_0".to_string(),
+                    start_ms: 0,
+                    end_ms: 4_000,
+                    speaker_id: None,
+                    source_text: "Before window".to_string(),
+                    translated_text: "窗口之前".to_string(),
+                },
+                crate::translation::TranslationSegment {
+                    id: "seg_1".to_string(),
+                    start_ms: 6_000,
+                    end_ms: 8_000,
+                    speaker_id: None,
+                    source_text: "Inside window".to_string(),
+                    translated_text: "窗口内".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            reference_text_for_clone(&translation).as_deref(),
+            Some("Inside window")
         );
     }
 

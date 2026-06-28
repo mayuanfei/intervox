@@ -19,6 +19,35 @@ export type BailianModel = "qwen3-asr-flash-filetrans" | "fun-asr";
 export type BailianDeployment = "china_mainland" | "international";
 export type WhisperModel = "small" | "medium";
 
+export type TranslationProviderId =
+  | "aliyun_qwen"
+  | "volc_speech_mt"
+  | "volc_ark"
+  | "deepseek"
+  | "google_translate"
+  | "local_llm";
+
+export type TtsProviderId =
+  | "aliyun_cosyvoice"
+  | "volc_doubao"
+  | "local_tts";
+
+export interface TranslationConfig {
+  provider: TranslationProviderId;
+  model: string;
+  deployment: BailianDeployment;
+}
+
+export interface TtsConfig {
+  provider: TtsProviderId;
+  model: string;
+  voice: string;
+  synthesis_mode: "default" | "clone";
+  app_id?: string;
+  tts_resource_id?: string;
+  endpoint?: string;
+}
+
 export interface AsrConfig {
   provider: AsrProviderId;
   source_language: SourceLanguageCode;
@@ -43,6 +72,8 @@ export interface AsrConfig {
     model_path: string;
     translation_endpoint?: string;
   };
+  translation: TranslationConfig;
+  tts: TtsConfig;
 }
 
 export interface TranscriptSegment {

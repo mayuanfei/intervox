@@ -27,17 +27,20 @@ enum TranslationBackend {
     AliyunQwen,
     VolcArk,
     VolcSpeechMt,
+    Deepseek,
+    GoogleTranslate,
+    LocalLlm,
 }
 
 impl TranslationBackend {
-    fn from_model(model: &str) -> Self {
-        let model = model.trim();
-        if model == "volc-speech-mt" {
-            Self::VolcSpeechMt
-        } else if model.to_lowercase().contains("doubao") || model.starts_with("ep-") {
-            Self::VolcArk
-        } else {
-            Self::AliyunQwen
+    fn from_provider(provider: &str) -> Self {
+        match provider.trim() {
+            "volc_speech_mt" => Self::VolcSpeechMt,
+            "volc_ark" => Self::VolcArk,
+            "deepseek" => Self::Deepseek,
+            "google_translate" => Self::GoogleTranslate,
+            "local_llm" => Self::LocalLlm,
+            _ => Self::AliyunQwen,
         }
     }
 
@@ -46,13 +49,19 @@ impl TranslationBackend {
             Self::AliyunQwen => AsrProviderId::AliyunBailian,
             Self::VolcArk => AsrProviderId::VolcArk,
             Self::VolcSpeechMt => AsrProviderId::VolcDoubao,
+            Self::Deepseek => AsrProviderId::Deepseek,
+            Self::GoogleTranslate => AsrProviderId::GoogleTranslate,
+            Self::LocalLlm => AsrProviderId::LocalWhisper,
         }
     }
 
     fn batch_size(self) -> usize {
         match self {
             Self::VolcSpeechMt => VOLC_SPEECH_MT_BATCH_SIZE,
-            Self::AliyunQwen | Self::VolcArk => LLM_TRANSLATION_BATCH_SIZE,
+            Self::GoogleTranslate => 16,
+            Self::AliyunQwen | Self::VolcArk | Self::Deepseek | Self::LocalLlm => {
+                LLM_TRANSLATION_BATCH_SIZE
+            }
         }
     }
 
@@ -61,6 +70,9 @@ impl TranslationBackend {
             Self::AliyunQwen => "aliyun_qwen",
             Self::VolcArk => "volc_ark",
             Self::VolcSpeechMt => "volc_speech_mt",
+            Self::Deepseek => "deepseek",
+            Self::GoogleTranslate => "google_translate",
+            Self::LocalLlm => "local_llm",
         }
     }
 }
@@ -68,8 +80,10 @@ impl TranslationBackend {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TranslationRequest {
     pub transcript: TranscriptDocument,
+    pub provider: String,
     pub model: String,
     pub deployment: BailianDeployment,
+    pub local_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -145,15 +159,21 @@ where
             provider: request.transcript.provider,
             segments: merged_segments,
         },
+        provider: request.provider,
         model: request.model,
         deployment: request.deployment,
+        local_endpoint: request.local_endpoint.clone(),
     };
 
-    let backend = TranslationBackend::from_model(&request.model);
+    let backend = TranslationBackend::from_provider(&request.provider);
     let batch_size = backend.batch_size();
-    let api_key = credentials
-        .get(backend.credential_provider())?
-        .ok_or(TranslationError::MissingCredential)?;
+    let api_key = if backend == TranslationBackend::LocalLlm {
+        String::new()
+    } else {
+        credentials
+            .get(backend.credential_provider())?
+            .ok_or(TranslationError::MissingCredential)?
+    };
 
     let client = Client::builder()
         .timeout(Duration::from_secs(TRANSLATION_TIMEOUT_SECS))
@@ -180,8 +200,10 @@ where
                 provider: request.transcript.provider,
                 segments: batch.to_vec(),
             },
+            provider: request.provider.clone(),
             model: request.model.clone(),
             deployment: request.deployment.clone(),
+            local_endpoint: request.local_endpoint.clone(),
         };
         let batch_document =
             request_complete_translation_batch(&client, &api_key, &batch_request, backend)?;
@@ -257,7 +279,11 @@ fn request_translation_document(
     backend: TranslationBackend,
 ) -> Result<TranslationDocument, TranslationError> {
     let response = request_translation_batch(client, api_key, request, backend)?;
-    Ok(parse_translation_response(request, &response, backend.document_provider()))
+    Ok(parse_translation_response(
+        request,
+        &response,
+        backend.document_provider(),
+    ))
 }
 
 fn missing_transcript_segments(
@@ -290,8 +316,10 @@ fn translation_request_with_segments(
             provider: request.transcript.provider,
             segments,
         },
+        provider: request.provider.clone(),
         model: request.model.clone(),
         deployment: request.deployment.clone(),
+        local_endpoint: request.local_endpoint.clone(),
     }
 }
 
@@ -461,7 +489,239 @@ fn request_translation_batch(
         TranslationBackend::AliyunQwen | TranslationBackend::VolcArk => {
             request_llm_translation_batch(client, api_key, request, backend)
         }
+        TranslationBackend::Deepseek => {
+            request_deepseek_translation_batch(client, api_key, request)
+        }
+        TranslationBackend::GoogleTranslate => {
+            request_google_translate_batch(client, api_key, request)
+        }
+        TranslationBackend::LocalLlm => request_local_llm_batch(client, request),
     }
+}
+
+fn request_deepseek_translation_batch(
+    client: &Client,
+    api_key: &str,
+    request: &TranslationRequest,
+) -> Result<Value, TranslationError> {
+    let model_name = request.model.trim();
+    let model = if model_name.is_empty() {
+        "deepseek-v4-flash"
+    } else {
+        model_name
+    };
+    let url = "https://api.deepseek.com/chat/completions";
+
+    let payload = json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是专业视频本地化翻译。保持原意，翻译要自然口语化，适合配音朗读。请直接返回符合指定结构的 JSON，不要有任何 Markdown 标记或其它解释性文字。"
+            },
+            {
+                "role": "user",
+                "content": build_translation_prompt(&request)
+            }
+        ],
+        "temperature": 0.2,
+        "response_format": { "type": "json_object" }
+    });
+
+    let response = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&payload)
+        .send()
+        .map_err(http_error)?;
+    let status = response.status();
+    let response_text = response.text().map_err(http_error)?;
+
+    if !status.is_success() {
+        return Err(TranslationError::Api(format!(
+            "DeepSeek API HTTP {status}: {}",
+            truncate_for_error(&response_text)
+        )));
+    }
+
+    let response_json: Value = serde_json::from_str(&response_text).map_err(|error| {
+        TranslationError::Api(format!(
+            "DeepSeek 响应不是 JSON：{error}；原始响应：{}",
+            truncate_for_error(&response_text)
+        ))
+    })?;
+
+    let content = response_json
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            TranslationError::Api(format!("DeepSeek 未返回 message.content：{response_json}"))
+        })?;
+
+    let cleaned = clean_json_content(content);
+    let content_json: Value = serde_json::from_str(cleaned).map_err(|error| {
+        TranslationError::Api(format!("JSON解析失败: {error}; 原始文本: {content}"))
+    })?;
+
+    Ok(content_json)
+}
+
+fn request_google_translate_batch(
+    client: &Client,
+    api_key: &str,
+    request: &TranslationRequest,
+) -> Result<Value, TranslationError> {
+    let google_lang = match request.transcript.target_language {
+        TargetLanguageCode::ZhHansCn => "zh-CN",
+        TargetLanguageCode::EnUs => "en",
+        TargetLanguageCode::JaJp => "ja",
+        TargetLanguageCode::KoKr => "ko",
+        TargetLanguageCode::EsEs => "es",
+        TargetLanguageCode::FrFr => "fr",
+        TargetLanguageCode::DeDe => "de",
+    };
+
+    let text_list: Vec<String> = request
+        .transcript
+        .segments
+        .iter()
+        .map(|segment| segment.text.clone())
+        .collect();
+
+    let url = format!("https://translation.googleapis.com/language/translate/v2?key={api_key}");
+    let payload = json!({
+        "q": text_list,
+        "target": google_lang,
+        "format": "text"
+    });
+
+    let response = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .map_err(http_error)?;
+    let status = response.status();
+    let response_text = response.text().map_err(http_error)?;
+
+    if !status.is_success() {
+        return Err(TranslationError::Api(format!(
+            "Google Translate API HTTP {status}: {}",
+            truncate_for_error(&response_text)
+        )));
+    }
+
+    let response_json: Value = serde_json::from_str(&response_text).map_err(|error| {
+        TranslationError::Api(format!(
+            "Google Translate 响应不是 JSON：{error}；原始响应：{}",
+            truncate_for_error(&response_text)
+        ))
+    })?;
+
+    let translations = response_json
+        .pointer("/data/translations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            TranslationError::Api(format!("Google Translate 响应格式错误：{response_json}"))
+        })?;
+
+    if translations.len() != request.transcript.segments.len() {
+        return Err(TranslationError::Api(format!(
+            "Google 翻译结果数量不匹配：请求 {} 段，返回 {} 段。",
+            request.transcript.segments.len(),
+            translations.len()
+        )));
+    }
+
+    let segments: Vec<Value> = request
+        .transcript
+        .segments
+        .iter()
+        .zip(translations)
+        .map(|(segment, item)| {
+            let translated_text = item
+                .get("translatedText")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            json!({
+                "id": segment.id,
+                "translated_text": translated_text
+            })
+        })
+        .collect();
+
+    Ok(json!({ "segments": segments }))
+}
+
+fn request_local_llm_batch(
+    client: &Client,
+    request: &TranslationRequest,
+) -> Result<Value, TranslationError> {
+    let local_endpoint = request
+        .local_endpoint
+        .as_deref()
+        .unwrap_or("http://localhost:11434/v1")
+        .trim_end_matches('/');
+    let url = format!("{local_endpoint}/chat/completions");
+
+    let model_name = request.model.trim();
+    let model = if model_name.is_empty() {
+        "qwen2.5"
+    } else {
+        model_name
+    };
+
+    let payload = json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是专业视频本地化翻译。保持原意，翻译要自然口语化，适合配音朗读。请直接返回符合指定结构的 JSON，不要有任何 Markdown 标记或其它解释性文字。"
+            },
+            {
+                "role": "user",
+                "content": build_translation_prompt(&request)
+            }
+        ],
+        "temperature": 0.2,
+        "response_format": { "type": "json_object" }
+    });
+
+    let response = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .map_err(http_error)?;
+    let status = response.status();
+    let response_text = response.text().map_err(http_error)?;
+
+    if !status.is_success() {
+        return Err(TranslationError::Api(format!(
+            "本地 LLM (Ollama) HTTP {status}: {}",
+            truncate_for_error(&response_text)
+        )));
+    }
+
+    let response_json: Value = serde_json::from_str(&response_text).map_err(|error| {
+        TranslationError::Api(format!(
+            "本地 LLM 响应不是 JSON：{error}；原始响应：{}",
+            truncate_for_error(&response_text)
+        ))
+    })?;
+
+    let content = response_json
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            TranslationError::Api(format!("本地 LLM 未返回 message.content：{response_json}"))
+        })?;
+
+    let cleaned = clean_json_content(content);
+    let content_json: Value = serde_json::from_str(cleaned).map_err(|error| {
+        TranslationError::Api(format!("JSON解析失败: {error}; 原始文本: {content}"))
+    })?;
+
+    Ok(content_json)
 }
 
 fn request_llm_translation_batch(
@@ -789,14 +1049,16 @@ mod tests {
                     })
                     .collect(),
             },
+            provider: "volc_speech_mt".to_string(),
             model: "volc-speech-mt".to_string(),
             deployment: BailianDeployment::ChinaMainland,
+            local_endpoint: None,
         }
     }
 
     #[test]
     fn volc_speech_mt_uses_speech_credential_and_batch_limit() {
-        let backend = TranslationBackend::from_model("volc-speech-mt");
+        let backend = TranslationBackend::from_provider("volc_speech_mt");
 
         assert_eq!(backend, TranslationBackend::VolcSpeechMt);
         assert_eq!(backend.credential_provider(), AsrProviderId::VolcDoubao);
@@ -939,8 +1201,10 @@ mod tests {
                     confidence: None,
                 }],
             },
+            provider: "aliyun_qwen".to_string(),
             model: "qwen-plus".to_string(),
             deployment: BailianDeployment::ChinaMainland,
+            local_endpoint: None,
         };
         let response = json!({
             "segments": [{
@@ -1017,8 +1281,10 @@ mod tests {
                     },
                 ],
             },
+            provider: "aliyun_qwen".to_string(),
             model: "qwen-plus".to_string(),
             deployment: BailianDeployment::ChinaMainland,
+            local_endpoint: None,
         };
         let response = json!({
             "segments": [{
