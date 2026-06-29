@@ -83,6 +83,10 @@ const DOWNLOADER_STATE_KEY = "intervox-downloader-state";
 const isDesktopApp = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+function downloadResultKey(sourceUrl: string, resourceId: string) {
+  return `${sourceUrl}::${resourceId}`;
+}
+
 function formatBytes(value?: number | null) {
   if (!value) return "";
   const units = ["B", "KB", "MB", "GB"];
@@ -239,7 +243,10 @@ export function Downloader() {
           subtitle_automatic: selectedSubtitle?.automatic ?? false,
         },
       });
-      setCompletedDownloads((current) => ({ ...current, [YT_DLP_DOWNLOAD_ID]: result }));
+      setCompletedDownloads((current) => ({
+        ...current,
+        [downloadResultKey(analysis.source_url, YT_DLP_DOWNLOAD_ID)]: result,
+      }));
       showToast(
         result.warnings?.length ? t("Video downloaded, but subtitles could not be downloaded.") : t("Download completed."),
         result.warnings?.length ? "info" : "success",
@@ -277,7 +284,10 @@ export function Downloader() {
           title: analysis.title,
         },
       });
-      setCompletedDownloads((current) => ({ ...current, [resource.id]: result }));
+      setCompletedDownloads((current) => ({
+        ...current,
+        [downloadResultKey(analysis.source_url, resource.id)]: result,
+      }));
       showToast(t("Download completed."), "success");
     } catch (e: any) {
       showToast(String(e), "error");
@@ -322,7 +332,9 @@ export function Downloader() {
       <div className="space-y-3">
         {resources.map((resource) => {
           const isDownloading = activeDownloadId === resource.id;
-          const result = completedDownloads[resource.id];
+          const result = analysis
+            ? completedDownloads[downloadResultKey(analysis.source_url, resource.id)]
+            : undefined;
           const progress = isDownloading ? downloadProgress : null;
           return (
             <div key={resource.id} className="border th-border bg-black/20 p-3.5 rounded-sm space-y-3">
@@ -420,7 +432,9 @@ export function Downloader() {
     );
   };
 
-  const ytDlpResult = completedDownloads[YT_DLP_DOWNLOAD_ID];
+  const ytDlpResult = analysis
+    ? completedDownloads[downloadResultKey(analysis.source_url, YT_DLP_DOWNLOAD_ID)]
+    : undefined;
   const ytDlpProgress = activeDownloadId === YT_DLP_DOWNLOAD_ID ? downloadProgress : null;
   const ytDlpProgressDetail = ytDlpProgress
     ? [
