@@ -8,3 +8,8 @@ src-tauri/gen/
 .idea/
 /tools/ffmpeg/
 *.log
+
+# Local tooling
+.codegraph/
+request.json
+scoring.log
