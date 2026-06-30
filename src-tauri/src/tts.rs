@@ -420,18 +420,115 @@ where
         .timeout(Duration::from_secs(900))
         .build()?;
 
-    let clone_reference = if request.original_video_path.is_some() {
-        Some(
-            extract_slice_to_temp(
-                request.original_video_path.as_deref().unwrap_or_default(),
-                request.output_dir.as_deref(),
-            )
-            .map_err(|e| TtsError::Api(format!("提取本地声音克隆音源失败：{e}")))?,
-        )
-    } else {
-        None
-    };
-    let ref_text = reference_text_for_clone(&request.translation);
+    let mut ref_text: Option<String> = None;
+    let mut clone_reference = None;
+    if request.original_video_path.is_some() {
+        // 1. Try to load subtitle file for original_video_path
+        let mut parsed_ref_srt = Vec::new();
+        if let Some(video_path) = request.original_video_path.as_deref() {
+            let video_path_obj = std::path::Path::new(video_path);
+            let candidates = vec![
+                video_path_obj.with_extension("en.srt"),
+                video_path_obj.with_extension("srt"),
+                std::path::PathBuf::from(format!("{video_path}.en.srt")),
+                std::path::PathBuf::from(format!("{video_path}.srt")),
+            ];
+            for cand in candidates {
+                if cand.exists() && cand.is_file() {
+                    parsed_ref_srt = parse_srt_file(&cand);
+                    if !parsed_ref_srt.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 2. Select the best segment times & text
+        let mut min_start = 0;
+        let mut max_end = 0;
+        let mut resolved_text = String::new();
+
+        if !parsed_ref_srt.is_empty() {
+            // Find the best scoring segment inside the reference video's own SRT!
+            let mut best_score = -999;
+            let mut best_ref_seg = None;
+            for seg in &parsed_ref_srt {
+                let temp_seg = crate::translation::TranslationSegment {
+                    id: String::new(),
+                    start_ms: seg.start_ms,
+                    end_ms: seg.end_ms,
+                    speaker_id: None,
+                    source_text: seg.text.clone(),
+                    translated_text: String::new(),
+                };
+                let score = score_segment(&temp_seg);
+                if score > best_score && score > -500 {
+                    best_score = score;
+                    best_ref_seg = Some(seg);
+                }
+            }
+
+            if let Some(seg) = best_ref_seg {
+                min_start = seg.start_ms;
+                max_end = seg.end_ms;
+                let duration_sec = ((max_end.saturating_sub(min_start)) as f32 / 1000.0).max(5.0);
+                resolved_text = get_text_for_window(&parsed_ref_srt, min_start, min_start + (duration_sec * 1000.0) as u64);
+            }
+        }
+
+        // If no reference SRT was found or it was empty, fall back to target translation segments
+        if resolved_text.trim().is_empty() {
+            let mut best_score = -999;
+            let mut best_target_seg = None;
+            for segment in &request.translation.segments {
+                let score = score_segment(segment);
+                if score > best_score && score > -500 {
+                    best_score = score;
+                    best_target_seg = Some(segment);
+                }
+            }
+
+            let seg_to_use = if let Some(seg) = best_target_seg {
+                Some(seg)
+            } else if !request.translation.segments.is_empty() {
+                Some(&request.translation.segments[0])
+            } else {
+                None
+            };
+
+            if let Some(seg) = seg_to_use {
+                min_start = seg.start_ms;
+                max_end = seg.end_ms;
+                let duration_sec = ((max_end.saturating_sub(min_start)) as f32 / 1000.0).max(5.0);
+                resolved_text = get_text_from_target_segments(&request.translation.segments, min_start, min_start + (duration_sec * 1000.0) as u64);
+            }
+        }
+
+        // 3. Perform slicing and set ref_text
+        if max_end > min_start {
+            let start_sec = min_start as f32 / 1000.0;
+            let mut duration_sec = (max_end.saturating_sub(min_start)) as f32 / 1000.0;
+            if duration_sec < 5.0 {
+                duration_sec = 5.0;
+            }
+
+            if !resolved_text.trim().is_empty() {
+                ref_text = Some(resolved_text.trim().to_string());
+            } else {
+                ref_text = None;
+            }
+
+            clone_reference = Some(
+                extract_slice_to_temp_with_bounds(
+                    request.original_video_path.as_deref().unwrap_or_default(),
+                    request.output_dir.as_deref(),
+                    start_sec,
+                    duration_sec,
+                )
+                .map_err(|e| TtsError::Api(format!("提取本地声音克隆音源失败：{e}")))?,
+            );
+        }
+    }
     let engine = local_tts_engine(&request.model);
     let num_step = local_tts_num_step(&request.model);
     let language = omnivoice_language(&request.translation.target_language);
@@ -652,6 +749,7 @@ fn omnivoice_language(target_language: &TargetLanguageCode) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn reference_text_for_clone(translation: &TranslationDocument) -> Option<String> {
     let window_text = collect_reference_text(
         translation
@@ -663,12 +761,19 @@ fn reference_text_for_clone(translation: &TranslationDocument) -> Option<String>
     if window_text.is_some() {
         return window_text;
     }
-    collect_reference_text(
+    let fallback = collect_reference_text(
         translation
             .segments
             .iter()
             .map(|segment| segment.source_text.as_str()),
-    )
+    );
+    if fallback.is_some() {
+        return fallback;
+    }
+    // Safeguard fallback: if no text was found in the translation segments,
+    // return a default non-empty placeholder string so that OmniVoice never
+    // tries to load/download Whisper on-the-fly and crash.
+    Some("voice clone reference audio".to_string())
 }
 
 fn collect_reference_text<'a>(texts: impl Iterator<Item = &'a str>) -> Option<String> {
@@ -805,9 +910,11 @@ fn map_volc_console_instance_id(
     }
 }
 
-fn extract_slice_to_temp(
+fn extract_slice_to_temp_with_bounds(
     input_video_path: &str,
     output_dir: Option<&str>,
+    start_sec: f32,
+    duration_sec: f32,
 ) -> Result<std::path::PathBuf, String> {
     let input_path = std::path::Path::new(input_video_path);
     if !input_path.exists() {
@@ -822,12 +929,14 @@ fn extract_slice_to_temp(
     let mut cmd = std::process::Command::new(crate::export::ffmpeg_path());
     cmd.arg("-y")
         .arg("-ss")
-        .arg("5")
+        .arg(start_sec.to_string())
         .arg("-i")
         .arg(input_video_path)
         .arg("-t")
-        .arg("15")
+        .arg(duration_sec.to_string())
         .arg("-vn")
+        .arg("-filter_complex")
+        .arg("silenceremove=start_threshold=-50dB:start_duration=0.1:start_periods=1,adelay=300:all=1")
         .arg("-c:a")
         .arg("libmp3lame")
         .arg("-ar")
@@ -848,8 +957,10 @@ fn extract_slice_to_temp(
             .arg("-i")
             .arg(input_video_path)
             .arg("-t")
-            .arg("15")
+            .arg(duration_sec.to_string())
             .arg("-vn")
+            .arg("-filter_complex")
+            .arg("silenceremove=start_threshold=-50dB:start_duration=0.1:start_periods=1,adelay=300:all=1")
             .arg("-c:a")
             .arg("libmp3lame")
             .arg("-ar")
@@ -869,6 +980,13 @@ fn extract_slice_to_temp(
     }
 
     Ok(output_audio_path)
+}
+
+fn extract_slice_to_temp(
+    input_video_path: &str,
+    output_dir: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    extract_slice_to_temp_with_bounds(input_video_path, output_dir, 5.0, 15.0)
 }
 
 fn enroll_voice(client: &Client, api_key: &str, oss_url: &str) -> Result<String, TtsError> {
@@ -1554,3 +1672,162 @@ mod tests {
         );
     }
 }
+
+// ── Offline Reference Text Extraction from SRT or Segments ─────────────────
+
+struct SrtSegment {
+    start_ms: u64,
+    end_ms: u64,
+    text: String,
+}
+
+fn parse_srt_time(time_str: &str) -> Option<u64> {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let hours: u64 = parts[0].trim().parse().ok()?;
+    let minutes: u64 = parts[1].trim().parse().ok()?;
+    
+    let seconds_parts: Vec<&str> = parts[2].split(|c| c == ',' || c == '.').collect();
+    if seconds_parts.len() != 2 {
+        return None;
+    }
+    let seconds: u64 = seconds_parts[0].trim().parse().ok()?;
+    let ms: u64 = seconds_parts[1].trim().parse().ok()?;
+    
+    Some(hours * 3600000 + minutes * 60000 + seconds * 1000 + ms)
+}
+
+fn parse_srt_file(path: &std::path::Path) -> Vec<SrtSegment> {
+    let content = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    
+    let mut segments = Vec::new();
+    let mut lines = content.lines().map(|l| l.trim());
+    
+    while let Some(line) = lines.next() {
+        if line.is_empty() {
+            continue;
+        }
+        if line.parse::<u32>().is_ok() {
+            if let Some(time_line) = lines.next() {
+                let time_parts: Vec<&str> = time_line.split("-->").collect();
+                if time_parts.len() == 2 {
+                    if let (Some(start), Some(end)) = (parse_srt_time(time_parts[0]), parse_srt_time(time_parts[1])) {
+                        let mut text = String::new();
+                        while let Some(text_line) = lines.next() {
+                            if text_line.is_empty() {
+                                break;
+                            }
+                            if !text.is_empty() {
+                                text.push(' ');
+                            }
+                            text.push_str(text_line);
+                        }
+                        segments.push(SrtSegment {
+                            start_ms: start,
+                            end_ms: end,
+                            text,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    segments
+}
+
+fn get_text_for_window(srt_segments: &[SrtSegment], start_ms: u64, end_ms: u64) -> String {
+    let mut texts = Vec::new();
+    for seg in srt_segments {
+        let overlap_start = start_ms.max(seg.start_ms);
+        let overlap_end = end_ms.min(seg.end_ms);
+        if overlap_end > overlap_start {
+            let overlap_duration = overlap_end - overlap_start;
+            let seg_duration = seg.end_ms.saturating_sub(seg.start_ms);
+            if overlap_duration >= 200 || (seg_duration > 0 && overlap_duration * 5 >= seg_duration) {
+                texts.push(seg.text.as_str());
+            }
+        }
+    }
+    texts.join(" ")
+}
+
+fn get_text_from_target_segments(segments: &[crate::translation::TranslationSegment], start_ms: u64, end_ms: u64) -> String {
+    let mut texts = Vec::new();
+    for seg in segments {
+        let overlap_start = start_ms.max(seg.start_ms);
+        let overlap_end = end_ms.min(seg.end_ms);
+        if overlap_end > overlap_start {
+            let overlap_duration = overlap_end - overlap_start;
+            let seg_duration = seg.end_ms.saturating_sub(seg.start_ms);
+            if overlap_duration >= 200 || (seg_duration > 0 && overlap_duration * 5 >= seg_duration) {
+                texts.push(seg.source_text.as_str());
+            }
+        }
+    }
+    texts.join(" ")
+}
+
+fn score_segment(segment: &crate::translation::TranslationSegment) -> i32 {
+    let text = segment.source_text.trim();
+    if text.is_empty() {
+        return -1000;
+    }
+    let chars_count = text.chars().count();
+    
+    // Length constraints (extremely short or long segments are terrible for cloning)
+    if chars_count < 15 || chars_count > 85 {
+        return -1000;
+    }
+    
+    let mut score = 0;
+    if (25..=65).contains(&chars_count) {
+        score += 30;
+    } else {
+        score += 10;
+    }
+    
+    // Duration constraints (ideal is 3.0s to 7.0s)
+    let duration_ms = segment.end_ms.saturating_sub(segment.start_ms);
+    if duration_ms < 2000 || duration_ms > 9000 {
+        return -1000;
+    }
+    if (3000..=7000).contains(&duration_ms) {
+        score += 20;
+    } else {
+        score += 5;
+    }
+    
+    // Preferred time window (early in the video is better to minimize seeking, but skip intros)
+    if segment.start_ms >= 5_000 && segment.end_ms <= 90_000 {
+        score += 15;
+    } else if segment.start_ms < 5_000 {
+        score -= 10;
+    }
+    
+    // Check first word of reference text to prevent prefix leakage
+    let first_word = text.split_whitespace().next().unwrap_or("").to_lowercase();
+    let cleaned_word = first_word.trim_matches(|c: char| !c.is_alphabetic());
+    
+    let soft_words = vec![
+        "and", "also", "to", "the", "that", "it", "with", "for", "as", "but", 
+        "or", "so", "of", "on", "at", "by", "this", "these", "then", "there"
+    ];
+    let bad_start_words = vec![
+        "some", "yourself", "in", "you", "we", "i", "he", "she", "they", 
+        "here", "what", "how", "why", "where", "when", "who", "which"
+    ];
+    
+    if soft_words.contains(&cleaned_word) {
+        score += 50; // Heavily prefer soft function words that don't trigger copy hallucinations
+    } else if bad_start_words.contains(&cleaned_word) {
+        score -= 40; // Penalty for words that easily trigger copy hallucinations
+    }
+    
+    score
+}
+

@@ -444,7 +444,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       return "";
     }
   });
-  const [replaceOriginalAudio, setReplaceOriginalAudio] = useState(false);
+  const [replaceOriginalAudio, setReplaceOriginalAudio] = useState(true);
   const [originalAudioVolume, setOriginalAudioVolume] = useState(0.25);
   const [voiceoverVolume, setVoiceoverVolume] = useState(1);
   const [showEnglishSubtitles, setShowEnglishSubtitles] = useState(false);
