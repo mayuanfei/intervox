@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useIntervox } from "../hooks/useIntervox";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   SOURCE_LANGUAGE_OPTIONS,
   TARGET_LANGUAGE_OPTIONS,
@@ -25,6 +26,11 @@ import {
 import { CustomSelect } from "../components/CustomSelect";
 import { useI18n } from "../i18n";
 import type { AsrConfig } from "../types/asr";
+import {
+  UPDATE_INSTALL_BLOCKED,
+  UPDATE_RUNTIME_UNAVAILABLE,
+  type UseUpdaterReturn,
+} from "../updater";
 
 /** Local Inference Services sub-tab – handles Whisper model auto-detection, file browsing, and Ollama endpoint. */
 function LocalInferenceTab({
@@ -296,7 +302,12 @@ function LocalInferenceTab({
   );
 }
 
-export function Settings() {
+interface SettingsProps {
+  updater: UseUpdaterReturn;
+  onShowUpdate: () => void;
+}
+
+export function Settings({ updater, onShowUpdate }: SettingsProps) {
   const {
     theme,
     setTheme,
@@ -342,6 +353,24 @@ export function Settings() {
   const [showDeepseekKey, setShowDeepseekKey] = React.useState(false);
   const [showGoogleKey, setShowGoogleKey] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<"bailian" | "volc" | "local" | "deepseek" | "google">("bailian");
+  const [appVersion, setAppVersion] = React.useState("...");
+
+  React.useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      setAppVersion("—");
+      return;
+    }
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion("?"));
+  }, []);
+
+  const updateError =
+    updater.error === UPDATE_RUNTIME_UNAVAILABLE
+      ? t("Update checks are only available in the installed desktop app.")
+      : updater.error === UPDATE_INSTALL_BLOCKED
+        ? t("Finish or cancel all queued and running tasks before installing an update.")
+        : updater.error;
 
   const handleBrowseOutputDir = async () => {
     if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
@@ -523,6 +552,83 @@ export function Settings() {
                 ]}
                 className="w-full rounded-lg border th-border th-bg-input px-3 py-2 th-text transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
               />
+            </div>
+          </div>
+        </div>
+
+        {/* Software Updates Card */}
+        <div className="border th-border th-bg-card p-5 space-y-4 rounded-sm">
+          <div className="flex items-center justify-between border-b th-border pb-2">
+            <div className="flex items-center gap-2">
+              <RefreshCw className="w-4 h-4 text-cyan-400" />
+              <span className="font-bold th-text uppercase tracking-widest text-xs">
+                {t("SOFTWARE UPDATES")}
+              </span>
+            </div>
+            <span className="text-[10px] font-mono th-text-muted">v{appVersion}</span>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="font-medium th-text-2">{t("Automatically check for updates")}</p>
+                <p className="mt-1 text-[11px] th-text-muted">
+                  {t("Check GitHub Releases when Intervox starts. Installation always requires confirmation.")}
+                </p>
+              </div>
+              <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                <input
+                  type="checkbox"
+                  checked={updater.autoUpdate}
+                  onChange={(event) => updater.setAutoUpdate(event.target.checked)}
+                  className="peer sr-only"
+                />
+                <div className="h-5 w-9 rounded-full bg-slate-800 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-slate-300 after:bg-slate-400 after:transition-all after:content-[''] peer-checked:bg-cyan-500 peer-checked:after:translate-x-full peer-checked:after:bg-black peer-checked:after:border-white" />
+              </label>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t th-border pt-4 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0 text-[11px]">
+                {updater.checking ? (
+                  <span className="text-cyan-400">{t("Checking for updates...")}</span>
+                ) : updater.hasUpdate && updater.updateInfo ? (
+                  <span className="text-amber-300">
+                    {t("Update available")}: v{updater.updateInfo.version}
+                  </span>
+                ) : updateError ? (
+                  <span className="break-all text-red-300">{updateError}</span>
+                ) : updater.lastCheckCompleted ? (
+                  <span className="text-emerald-400">{t("Intervox is up to date.")}</span>
+                ) : (
+                  <span className="th-text-muted">{t("No update check has been run yet.")}</span>
+                )}
+                {updater.installBlocked && updater.hasUpdate && (
+                  <p className="mt-1 text-amber-300/90">
+                    {t("Finish or cancel all queued and running tasks before installing an update.")}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex shrink-0 gap-2">
+                {updater.hasUpdate && updater.updateInfo && (
+                  <button
+                    type="button"
+                    onClick={onShowUpdate}
+                    className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-amber-300 transition-colors hover:bg-amber-500/20"
+                  >
+                    {t("View update")}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void updater.checkForUpdate()}
+                  disabled={updater.checking || updater.downloading}
+                  className="flex items-center gap-2 border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-cyan-400 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${updater.checking ? "animate-spin" : ""}`} />
+                  {t("Check for updates")}
+                </button>
+              </div>
             </div>
           </div>
         </div>

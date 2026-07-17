@@ -7,9 +7,41 @@ import { Tasks } from "./pages/Tasks";
 import { Settings } from "./pages/Settings";
 import { Downloader } from "./pages/Downloader";
 import { CheckCircle, AlertTriangle, Info } from "lucide-react";
+import { UpdateModal } from "./components/UpdateModal";
+import { useUpdater } from "./updater";
 
 function IntervoxContent() {
-  const { activePage, toast } = useIntervox();
+  const { activePage, toast, tasks } = useIntervox();
+  const hasActiveTasks = React.useMemo(
+    () => tasks.some((task) => task.status === "queued" || task.status === "running"),
+    [tasks],
+  );
+  const updater = useUpdater({ installBlocked: hasActiveTasks });
+  const [showUpdateModal, setShowUpdateModal] = React.useState(false);
+  const startupCheckStarted = React.useRef(false);
+
+  React.useEffect(() => {
+    if (startupCheckStarted.current || !updater.autoUpdate) return;
+    if (import.meta.env.DEV || !("__TAURI_INTERNALS__" in window)) return;
+    startupCheckStarted.current = true;
+    void updater.checkForUpdate();
+  }, [updater.autoUpdate, updater.checkForUpdate]);
+
+  React.useEffect(() => {
+    if (!updater.hasUpdate || !updater.updateInfo) return;
+    const skippedVersion = localStorage.getItem("intervox_skipped_update_version");
+    if (skippedVersion !== updater.updateInfo.version) {
+      setShowUpdateModal(true);
+    }
+  }, [updater.hasUpdate, updater.updateInfo]);
+
+  const skipUpdate = () => {
+    if (updater.updateInfo) {
+      localStorage.setItem("intervox_skipped_update_version", updater.updateInfo.version);
+    }
+    setShowUpdateModal(false);
+    updater.dismissUpdate();
+  };
 
   return (
     <div className="flex h-screen overflow-hidden font-mono text-[13px] th-text-2 antialiased th-bg-app relative">
@@ -36,7 +68,7 @@ function IntervoxContent() {
       )}
 
       {/* Collapsible Left Navigation Bar */}
-      <Sidebar />
+      <Sidebar hasUpdate={updater.hasUpdate} />
 
       {/* Main Workspace Frame */}
       <div className="flex-1 flex flex-col min-w-0 th-bg-main relative">
@@ -48,9 +80,31 @@ function IntervoxContent() {
           {activePage === "translate" && <Translate />}
           {activePage === "tasks" && <Tasks />}
           {activePage === "downloader" && <Downloader />}
-          {activePage === "settings" && <Settings />}
+          {activePage === "settings" && (
+            <Settings updater={updater} onShowUpdate={() => setShowUpdateModal(true)} />
+          )}
         </main>
       </div>
+
+      {showUpdateModal && updater.updateInfo && (
+        <UpdateModal
+          open={showUpdateModal}
+          updateInfo={updater.updateInfo}
+          downloading={updater.downloading}
+          progress={updater.progress}
+          error={updater.error}
+          installed={updater.installed}
+          installBlocked={updater.installBlocked}
+          onClose={() => {
+            if (!updater.downloading && !updater.installed) {
+              setShowUpdateModal(false);
+            }
+          }}
+          onSkip={skipUpdate}
+          onInstall={() => void updater.startInstall()}
+          onRelaunch={() => void updater.doRelaunch()}
+        />
+      )}
     </div>
   );
 }

@@ -1,0 +1,133 @@
+name: Build desktop installers
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-installers-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            platform: macos-latest
+            rust_target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles app,dmg
+          - name: Windows (x64)
+            platform: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            args: --bundles nsis
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Verify release metadata
+        run: npm run release:verify
+
+      - name: Verify updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.INTERVOX_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Repository secret INTERVOX_PRIVATE_KEY is required to build signed updater artifacts."
+            exit 1
+          fi
+
+      - name: Download and verify Windows yt-dlp sidecar
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $metadata = Get-Content "src-tauri/third-party/yt-dlp/version.json" | ConvertFrom-Json
+          $checksumLine = Select-String -Path "src-tauri/third-party/yt-dlp/SHA2-256SUMS" -Pattern "  yt-dlp\.exe$"
+          if (-not $checksumLine) {
+            throw "yt-dlp.exe checksum is missing"
+          }
+
+          $expected = ($checksumLine.Line -split "\s+")[0].ToLowerInvariant()
+          $output = "src-tauri/binaries/yt-dlp-x86_64-pc-windows-msvc.exe"
+          $url = "https://github.com/yt-dlp/yt-dlp/releases/download/$($metadata.version)/yt-dlp.exe"
+          Invoke-WebRequest -Uri $url -OutFile $output
+
+          $actual = (Get-FileHash -Path $output -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "yt-dlp.exe checksum mismatch: expected $expected, got $actual"
+          }
+
+      - name: Read changelog entry
+        id: changelog
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          echo 'body<<INTERVOX_RELEASE_NOTES' >> "$GITHUB_OUTPUT"
+          node .github/scripts/release-notes.mjs >> "$GITHUB_OUTPUT"
+          echo 'INTERVOX_RELEASE_NOTES' >> "$GITHUB_OUTPUT"
+
+      - name: Build installers
+        if: github.ref_type != 'tag'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.INTERVOX_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          args: ${{ matrix.args }}
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: true
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: intervox-[version]-[platform]-[arch]-[bundle]
+
+      - name: Build installers and publish GitHub Release
+        if: github.ref_type == 'tag'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.INTERVOX_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          args: ${{ matrix.args }}
+          tagName: ${{ github.ref_name }}
+          releaseName: Intervox ${{ github.ref_name }}
+          releaseBody: ${{ steps.changelog.outputs.body }}
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          uploadWorkflowArtifacts: true
+          releaseAssetNamePattern: intervox_[version]_[platform]_[arch][setup][ext]
+          workflowArtifactNamePattern: intervox-[version]-[platform]-[arch]-[bundle]

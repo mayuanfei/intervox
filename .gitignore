@@ -13,3 +13,6 @@ src-tauri/gen/
 .codegraph/
 request.json
 scoring.log
+
+# Local updater signing key (never commit this directory)
+.signing/

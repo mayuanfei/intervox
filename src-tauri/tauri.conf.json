@@ -27,10 +27,28 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQxQUNBQUY5MkVDM0Q1MzMKUldRejFjTXUrYXFzUVRHMVpsSFI3L2l6YXE2TlZGU1Rpa3NFRG9qdENUbVpucllZRnA5L3BhSUEK",
+      "endpoints": [
+        "https://github.com/mayuanfei/intervox/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "icon": [],
+    "createUpdaterArtifacts": true,
+    "targets": ["app", "dmg", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "externalBin": ["binaries/yt-dlp"],
     "resources": ["third-party/yt-dlp/*"]
   }

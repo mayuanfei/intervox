@@ -1253,7 +1253,11 @@ fn bundled_yt_dlp_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(directory) = current_exe.parent() {
-            paths.push(directory.join("yt-dlp"));
+            paths.push(directory.join(if cfg!(target_os = "windows") {
+                "yt-dlp.exe"
+            } else {
+                "yt-dlp"
+            }));
         }
     }
     if let Some(file_name) = bundled_yt_dlp_file_name() {
@@ -1274,6 +1278,10 @@ fn bundled_yt_dlp_file_name() -> Option<&'static str> {
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
         return Some("yt-dlp-x86_64-apple-darwin");
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        return Some("yt-dlp-x86_64-pc-windows-msvc.exe");
     }
     #[allow(unreachable_code)]
     None
@@ -1583,10 +1591,15 @@ printf video > "$output"
     }
 
     #[test]
-    fn bundled_yt_dlp_paths_include_current_macos_sidecar() {
+    fn bundled_yt_dlp_paths_include_current_platform_sidecar() {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         assert!(bundled_yt_dlp_paths()
             .iter()
             .any(|path| path.ends_with("binaries/yt-dlp-aarch64-apple-darwin")));
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        assert!(bundled_yt_dlp_paths()
+            .iter()
+            .any(|path| path.ends_with("binaries/yt-dlp-x86_64-pc-windows-msvc.exe")));
     }
 }

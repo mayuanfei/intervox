@@ -13,7 +13,7 @@ import { useIntervox } from "../hooks/useIntervox";
 import { useI18n } from "../i18n";
 import logoImg from "../logo.png";
 
-export function Sidebar() {
+export function Sidebar({ hasUpdate = false }: { hasUpdate?: boolean }) {
   const { activePage, setActivePage } = useIntervox();
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(false);
@@ -88,7 +88,7 @@ export function Sidebar() {
       <div className="p-4 border-t th-border">
         <button
           onClick={() => setActivePage("settings")}
-          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md font-medium font-mono text-[13px] transition-all border ${
+          className={`relative w-full flex items-center gap-3 px-3 py-2.5 rounded-md font-medium font-mono text-[13px] transition-all border ${
             activePage === "settings"
               ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 shadow-sm text-glow"
               : "border-transparent th-text-3 th-hover-surface"
@@ -97,6 +97,12 @@ export function Sidebar() {
         >
           <SettingsIcon className="w-4 h-4 flex-shrink-0" />
           {!collapsed && <span>{t("Settings")}</span>}
+          {hasUpdate && (
+            <span
+              className={`${collapsed ? "absolute right-2 top-2" : "ml-auto"} h-2 w-2 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)]`}
+              title={t("Update available")}
+            />
+          )}
         </button>
       </div>
     </aside>

@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Default desktop capabilities",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-simple-fullscreen"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-simple-fullscreen",
+    "updater:default",
+    "process:default"
+  ]
 }
