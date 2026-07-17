@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "release:verify": "node .github/scripts/verify-release.mjs",
+    "release:verify": "node .github/scripts/verify-release.mjs && node --test .github/scripts/normalize-updater-json.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 修复
+
+- 自动更新清单改用公开的 GitHub Release 下载直链，避免匿名 GitHub API 限流导致 Windows 更新下载返回 403。
+
 ## [0.1.1] - 2026-07-17
 
 ### 修复

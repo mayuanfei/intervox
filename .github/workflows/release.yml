@@ -7,17 +7,23 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      repair_release_tag:
+        description: Existing release tag whose latest.json should be repaired; leave empty to build installers
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: desktop-installers-${{ github.ref }}
+  group: desktop-installers-${{ github.ref }}-${{ inputs.repair_release_tag || 'build' }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   build:
     name: ${{ matrix.name }}
+    if: github.event_name != 'workflow_dispatch' || inputs.repair_release_tag == ''
     strategy:
       fail-fast: false
       matrix:
@@ -131,3 +137,68 @@ jobs:
           uploadWorkflowArtifacts: true
           releaseAssetNamePattern: intervox_[version]_[platform]_[arch][setup][ext]
           workflowArtifactNamePattern: intervox-[version]-[platform]-[arch]-[bundle]
+
+  publish-updater-manifest:
+    name: Publish updater manifest
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download updater manifest and release metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p updater-manifest
+          gh release download "$RELEASE_TAG" --pattern latest.json --dir updater-manifest
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > updater-manifest/release.json
+
+      - name: Replace API asset URLs with public downloads
+        run: node .github/scripts/normalize-updater-json.mjs updater-manifest/latest.json updater-manifest/release.json
+
+      - name: Upload normalized updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release upload "$RELEASE_TAG" updater-manifest/latest.json --clobber
+
+  repair-updater-manifest:
+    name: Repair updater manifest
+    if: github.event_name == 'workflow_dispatch' && inputs.repair_release_tag != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download updater manifest and release metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.repair_release_tag }}
+        run: |
+          mkdir -p updater-manifest
+          gh release download "$RELEASE_TAG" --pattern latest.json --dir updater-manifest
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > updater-manifest/release.json
+
+      - name: Replace API asset URLs with public downloads
+        run: node .github/scripts/normalize-updater-json.mjs updater-manifest/latest.json updater-manifest/release.json
+
+      - name: Upload normalized updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.repair_release_tag }}
+        run: gh release upload "$RELEASE_TAG" updater-manifest/latest.json --clobber

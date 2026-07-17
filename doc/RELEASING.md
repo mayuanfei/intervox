@@ -5,8 +5,8 @@
 `.github/workflows/release.yml` 会在以下场景运行：
 
 - 推送到 `main`：构建 macOS Apple Silicon 的 DMG 和 Windows x64 的 NSIS 安装程序，并保存到该次 GitHub Actions 运行的 `Artifacts` 中。
-- 推送 `v*` 标签：构建相同安装程序及签名更新包、创建对应 GitHub Release、生成 `latest.json`，并把 `CHANGELOG.md` 中当前版本的内容作为 Release 和应用内更新说明。
-- 在 GitHub Actions 页面手动运行：构建两个平台的安装程序并保存为工作流产物。
+- 推送 `v*` 标签：构建相同安装程序及签名更新包、创建对应 GitHub Release、生成 `latest.json`，将其中的 GitHub API 资产地址转换为公开下载直链，并把 `CHANGELOG.md` 中当前版本的内容作为 Release 和应用内更新说明。
+- 在 GitHub Actions 页面手动运行且不填写修复标签：构建两个平台的安装程序并保存为工作流产物。
 
 Windows 构建会下载 `src-tauri/third-party/yt-dlp/version.json` 指定版本的官方 `yt-dlp.exe`，并使用仓库保存的官方 SHA-256 清单校验后再打包。
 
@@ -57,6 +57,12 @@ gh secret set INTERVOX_PRIVATE_KEY --repo mayuanfei/intervox < .signing/intervox
    ```
 
 标签必须严格为 `v` 加应用版本号；不一致时工作流会直接失败，避免错误版本进入 Release。
+
+## 修复已发布的更新清单
+
+如果历史 Release 的 `latest.json` 使用了 `api.github.com/repos/.../releases/assets/...` 地址，匿名 GitHub API 限流可能导致应用下载更新时返回 403。可以在 GitHub Actions 页面手动运行 `Build desktop installers`，并在 `repair_release_tag` 中填写需要修复的标签，例如 `v0.1.1`。
+
+填写该参数后，工作流不会重新构建安装程序，只会读取该 Release 的资产元数据，把 `latest.json` 中的 API 地址替换为公开的 `github.com/.../releases/download/...` 直链并覆盖原清单。签名字段和安装程序本身不会改变。
 
 ## 签名说明
 
