@@ -1,6 +1,6 @@
 [package]
 name = "intervox"
-version = "0.1.0"
+version = "0.1.1"
 description = "AI video translation and dubbing desktop app"
 authors = ["intervox"]
 edition = "2021"
