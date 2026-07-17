@@ -288,6 +288,36 @@ function isVolcSpeechMtModel(model: string) {
   return model.trim() === "volc-speech-mt";
 }
 
+function asrProviderLabel(provider: AsrProviderId | undefined) {
+  switch (provider) {
+    case "aliyun_bailian":
+      return "阿里云百炼 ASR";
+    case "google_chirp3":
+      return "Google Chirp ASR";
+    case "volc_doubao":
+      return "火山引擎豆包 ASR";
+    case "local_whisper":
+      return "本地 Whisper ASR";
+    default:
+      return "ASR";
+  }
+}
+
+function asrPreparationMessage(provider: AsrProviderId | undefined) {
+  switch (provider) {
+    case "aliyun_bailian":
+      return "提取主音轨成功，文件准备上传百炼。";
+    case "volc_doubao":
+      return "提取主音轨成功，准备提交火山引擎豆包 ASR。";
+    case "google_chirp3":
+      return "提取主音轨成功，准备提交 Google Chirp ASR。";
+    case "local_whisper":
+      return "提取主音轨成功，准备进行本地 Whisper ASR。";
+    default:
+      return "提取主音轨成功，准备进行 ASR 识别。";
+  }
+}
+
 function outputPath(outputDir: string, fileName: string) {
   const baseDir = outputDir.trim().replace(/[\\/]+$/, "");
   return baseDir ? `${baseDir}/${fileName}` : fileName;
@@ -448,7 +478,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
   const [originalAudioVolume, setOriginalAudioVolume] = useState(0.25);
   const [voiceoverVolume, setVoiceoverVolume] = useState(1);
   const [showEnglishSubtitles, setShowEnglishSubtitles] = useState(false);
-  const [showTargetLanguageSubtitles, setShowTargetLanguageSubtitles] = useState(false);
+  const [showTargetLanguageSubtitles, setShowTargetLanguageSubtitles] = useState(true);
 
   useEffect(() => {
     try {
@@ -617,10 +647,11 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
 
     void listen<AsrProgressPayload>("asr-progress", (event) => {
       if (!isMounted) return;
+      const providerLabel = asrProviderLabel(config.provider);
       if (event.payload.stage === "started") {
-        setTranscriptionStatus("阿里云百炼 ASR 任务提交，正在识别...");
+        setTranscriptionStatus(`${providerLabel} 任务提交，正在识别...`);
         setTranscriptionProgress(0.15);
-        updateActiveTaskStage("asr", 0.15, "百炼 ASR 识别任务提交，已开始...");
+        updateActiveTaskStage("asr", 0.15, `${providerLabel} 识别任务提交，已开始...`);
       }
       if (event.payload.stage === "completed") {
         setTranscriptionStatus("识别完成，正在载入结果...");
@@ -739,7 +770,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       isMounted = false;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [activeTaskId]);
+  }, [activeTaskId, config.provider]);
 
   // Tasks mutation helpers
   const updateActiveTaskStage = (stage: IntervoxTask["stage"], progress: number, logMsg?: string) => {
@@ -1302,14 +1333,14 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
       app_id: configToUse.volc_doubao.app_id,
       tts_resource_id: configToUse.tts?.tts_resource_id || "",
       tts_endpoint: configToUse.tts?.endpoint || "",
-      local_tts_preset_version: ttsProvider === "local_tts" ? 4 : 1,
+      local_tts_preset_version: ttsProvider === "local_tts" ? 5 : 1,
     });
     const ttsCacheKey = hashString(ttsSignature);
 
     try {
       if (!isTaskStillRunning()) return;
       // Step 1: Extract Audio
-      updateActiveTaskStage("extract_audio", 0.5, "提取主音轨成功，文件准备上传百炼。");
+      updateActiveTaskStage("extract_audio", 0.5, asrPreparationMessage(configToUse.provider));
       await new Promise((r) => setTimeout(r, 800));
 
       if (!isTaskStillRunning()) return;
@@ -1327,9 +1358,7 @@ export function IntervoxProvider({ children }: { children: React.ReactNode }) {
         updateActiveTaskStage(
           "asr",
           0.1,
-          configToUse.provider === "volc_doubao"
-            ? "火山引擎豆包录音识别任务提交中..."
-            : "阿里云百炼 ASR 任务提交中..."
+          `${asrProviderLabel(configToUse.provider)} 任务提交中...`
         );
         asrResult = await invokeOrFallback<TranscriptDocument>(
           "asr_transcribe",
