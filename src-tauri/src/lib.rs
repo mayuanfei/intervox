@@ -3,6 +3,7 @@ mod credentials;
 mod downloader;
 mod export;
 mod playback_server;
+mod process;
 mod storage;
 mod translation;
 mod tts;
@@ -389,7 +390,7 @@ async fn generate_video_thumbnail(input_path: String) -> Result<String, String> 
         }
 
         let ffmpeg = export::ffmpeg_path();
-        let output = std::process::Command::new(&ffmpeg)
+        let output = process::background_command(&ffmpeg)
             .args(["-y", "-ss", "1.5", "-i"])
             .arg(&input_path)
             .args(["-frames:v", "1", "-q:v", "2"])
@@ -399,7 +400,7 @@ async fn generate_video_thumbnail(input_path: String) -> Result<String, String> 
 
         if !output.status.success() {
             // Retry at 0s in case the video is shorter than 1.5s
-            let retry_output = std::process::Command::new(&ffmpeg)
+            let retry_output = process::background_command(&ffmpeg)
                 .args(["-y", "-ss", "0", "-i"])
                 .arg(&input_path)
                 .args(["-frames:v", "1", "-q:v", "2"])
@@ -522,7 +523,7 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
+        process::background_command("open")
             .arg("-R")
             .arg(&path)
             .spawn()
@@ -530,7 +531,7 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("explorer")
+        process::background_command("explorer")
             .arg("/select,")
             .arg(&path)
             .spawn()
@@ -543,7 +544,7 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| path.clone());
-        std::process::Command::new("xdg-open")
+        process::background_command("xdg-open")
             .arg(&parent)
             .spawn()
             .map_err(|e| format!("无法打开文件管理器：{e}"))?;
@@ -559,21 +560,21 @@ fn open_in_default_app(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
+        process::background_command("open")
             .arg(&path)
             .spawn()
             .map_err(|e| format!("无法打开文件：{e}"))?;
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        process::background_command("cmd")
             .args(["/C", "start", "", &path])
             .spawn()
             .map_err(|e| format!("无法打开文件：{e}"))?;
     }
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
+        process::background_command("xdg-open")
             .arg(&path)
             .spawn()
             .map_err(|e| format!("无法打开文件：{e}"))?;

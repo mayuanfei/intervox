@@ -220,7 +220,7 @@ where
 
     on_progress(progress("yt-dlp-video", &file_name, "preparing", 0, None));
 
-    let mut command = Command::new(yt_dlp);
+    let mut command = crate::process::background_command(yt_dlp);
     command
         .args([
             "--ignore-config",
@@ -258,7 +258,7 @@ where
         .filter(|language| !language.is_empty())
     {
         on_progress(progress("yt-dlp-video", &file_name, "subtitles", 0, None));
-        let mut subtitle_command = Command::new(yt_dlp);
+        let mut subtitle_command = crate::process::background_command(yt_dlp);
         subtitle_command.args([
             "--ignore-config",
             "--no-playlist",
@@ -417,7 +417,7 @@ fn analyze_with_builtin_parser(url: &Url) -> Result<DownloadAnalysis, String> {
 
 fn analyze_with_yt_dlp(url: &Url) -> Option<DownloadAnalysis> {
     let yt_dlp = yt_dlp_path()?;
-    let output = Command::new(yt_dlp)
+    let output = crate::process::background_command(yt_dlp)
         .args([
             "--ignore-config",
             "--dump-single-json",
@@ -597,7 +597,7 @@ where
 {
     on_progress(progress(&request.resource.id, file_name, "muxing", 0, None));
 
-    let mut command = Command::new(crate::export::ffmpeg_path());
+    let mut command = crate::process::background_command(crate::export::ffmpeg_path());
     command
         .args(["-hide_banner", "-loglevel", "error", "-y"])
         .arg("-user_agent")
@@ -1240,7 +1240,7 @@ fn yt_dlp_path() -> Option<PathBuf> {
         )
         .find(|path| path.is_file())
         .or_else(|| {
-            Command::new("yt-dlp")
+            crate::process::background_command("yt-dlp")
                 .arg("--version")
                 .output()
                 .ok()

@@ -1053,7 +1053,7 @@ impl AsrProvider for LocalWhisperProvider {
 
         // 3. Convert input audio to 16kHz mono WAV (required by whisper.cpp)
         let temp_wav = temp_dir.join("input_16k.wav");
-        let mut ffmpeg_cmd = std::process::Command::new(crate::export::ffmpeg_path());
+        let mut ffmpeg_cmd = crate::process::background_command(crate::export::ffmpeg_path());
         ffmpeg_cmd
             .arg("-y")
             .arg("-hide_banner")
@@ -1149,7 +1149,7 @@ fn run_whisper_cli_json(
     output_file_prefix: &std::path::Path,
     whisper_lang: &str,
 ) -> Result<String, AsrError> {
-    let mut whisper_cmd = std::process::Command::new(whisper_bin);
+    let mut whisper_cmd = crate::process::background_command(whisper_bin);
     whisper_cmd
         .arg("-m")
         .arg(model_path)
@@ -1367,7 +1367,7 @@ fn find_whisper_cli(model_path: &std::path::Path) -> Option<std::path::PathBuf> 
         }
     }
 
-    if let Ok(output) = std::process::Command::new("which")
+    if let Ok(output) = crate::process::background_command("which")
         .arg("whisper-cli")
         .output()
     {
@@ -1379,7 +1379,10 @@ fn find_whisper_cli(model_path: &std::path::Path) -> Option<std::path::PathBuf> 
         }
     }
 
-    if let Ok(output) = std::process::Command::new("which").arg("main").output() {
+    if let Ok(output) = crate::process::background_command("which")
+        .arg("main")
+        .output()
+    {
         if output.status.success() {
             let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path_str.is_empty() && path_str.contains("whisper") {
@@ -1499,7 +1502,7 @@ fn extract_audio_chunks_to_temp(
 
     let chunk_prefix = "temp_asr_chunk";
     let output_pattern = temp_dir.join(format!("{chunk_prefix}_%03d.mp3"));
-    let mut cmd = std::process::Command::new(crate::export::ffmpeg_path());
+    let mut cmd = crate::process::background_command(crate::export::ffmpeg_path());
     cmd.arg("-y")
         .arg("-i")
         .arg(input_video_path)
@@ -1553,7 +1556,7 @@ fn extract_audio_chunks_to_temp(
 
 fn audio_duration_ms(path: &std::path::Path) -> Result<u64, AsrError> {
     let ffprobe = crate::export::ffprobe_path();
-    let output = std::process::Command::new(ffprobe)
+    let output = crate::process::background_command(ffprobe)
         .arg("-v")
         .arg("error")
         .arg("-show_entries")

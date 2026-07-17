@@ -926,7 +926,7 @@ fn extract_slice_to_temp_with_bounds(
 
     let output_audio_path = temp_dir.join(format!("temp_clone_{}.mp3", uuid::Uuid::new_v4()));
 
-    let mut cmd = std::process::Command::new(crate::export::ffmpeg_path());
+    let mut cmd = crate::process::background_command(crate::export::ffmpeg_path());
     cmd.arg("-y")
         .arg("-ss")
         .arg(start_sec.to_string())
@@ -951,7 +951,7 @@ fn extract_slice_to_temp_with_bounds(
         .output()
         .map_err(|_| "找不到 ffmpeg。请先安装 FFmpeg。".to_string())?;
     if !output.status.success() {
-        let mut fallback_cmd = std::process::Command::new(crate::export::ffmpeg_path());
+        let mut fallback_cmd = crate::process::background_command(crate::export::ffmpeg_path());
         fallback_cmd
             .arg("-y")
             .arg("-i")
@@ -1830,4 +1830,3 @@ fn score_segment(segment: &crate::translation::TranslationSegment) -> i32 {
     
     score
 }
-

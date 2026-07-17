@@ -318,7 +318,7 @@ fn ffmpeg_filters_contain(filters: &str, filter_name: &str) -> bool {
 }
 
 fn ffmpeg_command() -> Command {
-    Command::new(ffmpeg_path())
+    crate::process::background_command(ffmpeg_path())
 }
 
 pub fn ffmpeg_path() -> PathBuf {
@@ -902,7 +902,7 @@ fn parse_ffmpeg_progress_ms(line: &str) -> Option<u64> {
 }
 
 fn probe_media_duration_ms(media_url: &str) -> Option<u64> {
-    let output = Command::new(ffprobe_path())
+    let output = crate::process::background_command(ffprobe_path())
         .arg("-v")
         .arg("error")
         .arg("-show_entries")
@@ -1273,7 +1273,7 @@ enum PlaybackVideoMode {
 }
 
 fn probe_playback_media(path: &Path) -> Result<PlaybackMediaInfo, String> {
-    let output = Command::new(ffprobe_path())
+    let output = crate::process::background_command(ffprobe_path())
         .arg("-v")
         .arg("error")
         .arg("-show_entries")

@@ -4,9 +4,12 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-17
+
 ### 修复
 
 - 自动更新清单改用公开的 GitHub Release 下载直链，避免匿名 GitHub API 限流导致 Windows 更新下载返回 403。
+- Windows 后台启动 yt-dlp、FFmpeg、FFprobe 和本地 Whisper 等子进程时不再弹出控制台窗口，避免用户关闭窗口导致解析、下载或音视频合并中断。
 
 ## [0.1.1] - 2026-07-17
 
